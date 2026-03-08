@@ -345,20 +345,11 @@ Must Add:
     
     return message.content[0].text
 
-FIXED_SCHEMA = {
-    "case_id": "Unique case/scheduling identifier",
-    "patient_id": "Patient medical record number",
-    "patient_name": "Full patient name",
-    "surgeon": "Primary surgeon name",
-    "procedure": "Procedure or surgery name",
-    "room": "OR or procedure room",
-    "scheduled_time": "Scheduled date and time (ISO format)",
-    "department": "Hospital department or service",
-    "status": "Case status (scheduled, cancelled, modified)",
-    "attending_physician": "Attending physician if different from surgeon",
-}
-
-SAMPLE_HL7 = """MSH|^~\\&|EPIC|BAPTIST|BRIDGES|BRIDGES|20260306090000||SIU^S12|123456|P|2.3
+MESSAGE_TYPE_SCHEMAS = {
+    "SIU - Scheduling": {
+        "description": "Case scheduling — surgeon, room, procedure, time",
+        "default_fields": "case_id, patient_id, patient_name, surgeon, procedure, room, scheduled_time, department, status, attending_physician",
+        "sample": """MSH|^~\\&|EPIC|BAPTIST|BRIDGES|BRIDGES|20260306090000||SIU^S12|123456|P|2.3
 SCH|123456||20260306090000|60|MIN||^^^20260306090000^20260306100000
 PID|1||MRN98765^^^Baptist^MR||Smith^John^A||19700101|M
 PV1|1|I|OR-3^OR-3^OR-3|||||||Smith^Dr. Jane^^^MD
@@ -366,47 +357,61 @@ AIG|1||12345^Dr. Jane Smith^EPIC
 AIL|1||OR-3^Operating Room 3^EPIC
 TQ1|1|||20260306090000|20260306100000
 ZPR|CABG^Coronary Artery Bypass Graft|CARD|SCHEDULED"""
+    },
+    "ADT - Patient Admin": {
+        "description": "Patient admission, discharge, transfer",
+        "default_fields": "patient_id, patient_name, date_of_birth, gender, admit_date, discharge_date, bed_location, attending_physician, admission_type, diagnosis",
+        "sample": """MSH|^~\\&|EPIC|BAPTIST|ADT|ADT|20260306090000||ADT^A01|789012|P|2.3
+EVN|A01|20260306090000
+PID|1||MRN98765^^^Baptist^MR||Smith^John^A||19700101|M|||123 Main St^^Boston^MA^02101
+PV1|1|I|4N^401^A|||||||Smith^Dr. Jane^^^MD|||||||ADM|20260306090000
+DG1|1||I21.0^Acute MI^ICD10||20260306|A"""
+    },
+    "DFT - Charges/Billing": {
+        "description": "Supply usage, charges, billing data",
+        "default_fields": "case_id, patient_id, charge_date, procedure_code, supply_id, quantity, unit_price, total_price, is_implant, lot_number",
+        "sample": """MSH|^~\\&|EPIC|BAPTIST|DFT|DFT|20260306120000||DFT^P03|345678|P|2.3
+EVN|P03|20260306120000
+PID|1||MRN98765^^^Baptist^MR||Smith^John^A||19700101|M
+PV1|1|I|OR-3^OR-3^OR-3|||||||Smith^Dr. Jane^^^MD
+FT1|1||20260306|CG|SUP789^Stent 5mm^EPIC|2|150.00|300.00|||false
+FT1|2||20260306|CG|SUP790^Catheter 6Fr^EPIC|1|75.00|75.00|||true|LOT2026ABC"""
+    },
+    "ORM - Orders": {
+        "description": "Lab, radiology, or procedure orders",
+        "default_fields": "order_id, patient_id, ordering_physician, order_date, order_type, procedure_code, procedure_name, priority, status, notes",
+        "sample": """MSH|^~\\&|EPIC|BAPTIST|ORM|ORM|20260306080000||ORM^O01|901234|P|2.3
+PID|1||MRN98765^^^Baptist^MR||Smith^John^A||19700101|M
+ORC|NW|ORD123456|||SC||||20260306080000|||Jones^Dr. Bob^^^MD
+OBR|1|ORD123456||71046^Chest X-Ray^CPT|||20260306080000||||||||Jones^Dr. Bob^^^MD|||STAT"""
+    },
+}
 
-def parse_hl7_message(hl7_text):
+def parse_hl7_message(hl7_text, message_type, custom_fields=None):
     """Send HL7 message to Claude for parsing and mapping"""
     client = get_claude_client()
 
-    prompt = f"""You are an HL7 message parser for a surgical supply tracking system. Parse the following HL7 SIU message and map it to the fixed JSON schema below.
+    schema_info = MESSAGE_TYPE_SCHEMAS[message_type]
+    fields_to_extract = custom_fields.strip() if custom_fields and custom_fields.strip() else schema_info["default_fields"]
 
-TARGET SCHEMA:
-{str(FIXED_SCHEMA)}
+    prompt = f"""You are an HL7 message parser. Parse the following {message_type} message and extract these fields: {fields_to_extract}
 
 HL7 MESSAGE:
 {hl7_text}
 
-Respond ONLY with a valid JSON object in this exact structure (no markdown, no backticks):
+Respond ONLY with a valid JSON object (no markdown, no backticks):
 {{
-  "mapped": {{
-    "case_id": "...",
-    "patient_id": "...",
-    "patient_name": "...",
-    "surgeon": "...",
-    "procedure": "...",
-    "room": "...",
-    "scheduled_time": "...",
-    "department": "...",
-    "status": "...",
-    "attending_physician": "..."
-  }},
-  "field_explanations": {{
-    "case_id": "Found in SCH segment field 1"
-  }},
-  "unmapped_fields": ["field_name"],
-  "unmapped_reasons": {{
-    "field_name": "Segment not present in message"
-  }},
-  "confidence": "high",
-  "notes": "Any important observations"
+  "mapped": {{ <field_name>: <extracted_value> for each requested field }},
+  "field_explanations": {{ <field_name>: "Found in SEGMENT field X" }},
+  "unmapped_fields": [<fields you could not find>],
+  "unmapped_reasons": {{ <field_name>: "reason" }},
+  "confidence": "high|medium|low",
+  "notes": "any observations"
 }}"""
 
     message = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=1000,
+        max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
     import json
@@ -462,30 +467,47 @@ tab1, tab2 = st.tabs(["📄 Flat File Validator", "🔬 HL7 Parser"])
 
 with tab2:
     st.markdown("### HL7 → JSON Parser")
-    st.markdown("Paste a raw SIU message to map it to the AssistIQ case schema.")
+    st.markdown("Select a message type to get the default fields, or type your own.")
 
     col_in, col_out = st.columns(2)
 
     with col_in:
+        # Message type dropdown
+        message_type = st.selectbox(
+            "**Message Type**",
+            list(MESSAGE_TYPE_SCHEMAS.keys()),
+        )
+        schema_info = MESSAGE_TYPE_SCHEMAS[message_type]
+        st.caption(f"📋 {schema_info['description']}")
+
+        # Custom fields override
+        custom_fields = st.text_input(
+            "**Custom fields** (optional — leave blank to use defaults)",
+            placeholder="e.g. case_id, surgeon, room, scheduled_time",
+        )
+
+        # Show what fields will be extracted
+        fields_preview = custom_fields.strip() if custom_fields and custom_fields.strip() else schema_info["default_fields"]
+        st.caption(f"🔍 Will extract: `{fields_preview}`")
+
         st.markdown("**Raw HL7 Input**")
         if st.button("Load Sample Message"):
-            st.session_state.hl7_input = SAMPLE_HL7
+            st.session_state.hl7_input = schema_info["sample"]
+            st.session_state.hl7_message_type = message_type
+
         hl7_input = st.text_area(
             "Paste HL7 message here",
             value=st.session_state.get("hl7_input", ""),
-            height=300,
+            height=260,
             placeholder="MSH|^~\\&|EPIC|BAPTIST...",
             label_visibility="collapsed"
         )
-
-        st.markdown("**Fixed Target Schema**")
-        st.caption(" · ".join(FIXED_SCHEMA.keys()))
 
         if st.button("🔍 Parse & Map", type="primary"):
             if hl7_input.strip():
                 with st.spinner("Parsing message..."):
                     try:
-                        result = parse_hl7_message(hl7_input)
+                        result = parse_hl7_message(hl7_input, message_type, custom_fields)
                         st.session_state.hl7_result = result
                     except Exception as e:
                         st.error(f"Parse failed: {str(e)}")
