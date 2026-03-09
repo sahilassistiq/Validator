@@ -1,4 +1,23 @@
 import streamlit as st
+
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if not st.session_state.authenticated:
+        st.title("🔒 Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if username == st.secrets["USERNAME"] and password == st.secrets["PASSWORD"]:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+        st.stop()
+
+check_password()
+
+import streamlit as st
 import anthropic
 import os
 import pandas as pd
