@@ -1,720 +1,505 @@
 import streamlit as st
 import anthropic
-import os
-import pandas as pd
-from io import StringIO
+import json
+import time
 
-# Initialize Claude client
-@st.cache_resource
-def get_claude_client():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        st.error("⚠️ ANTHROPIC_API_KEY environment variable not set!")
+# ─── Auth ───────────────────────────────────────────────────────────────────
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if not st.session_state.authenticated:
+        st.title("🔒 Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if username == st.secrets["USERNAME"] and password == st.secrets["PASSWORD"]:
+                st.session_state.authenticated = True
+                st.session_state.last_activity = time.time()
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
         st.stop()
-    return anthropic.Anthropic(api_key=api_key)
 
-def convert_to_pipe_delimited(file, filename):
-    """Convert various file formats to pipe-delimited text"""
-    
-    file_ext = filename.lower().split('.')[-1]
-    
-    try:
-        if file_ext == 'txt':
-            # Read as text - check if it's already pipe-delimited
-            content = file.read().decode('utf-8')
-            
-            # Check if it's pipe-delimited
-            if '|' in content.split('\n')[0]:
-                return content, "txt (pipe-delimited)"
-            
-            # Check if it's tab-delimited
-            elif '\t' in content.split('\n')[0]:
-                df = pd.read_csv(StringIO(content), sep='\t')
-                pipe_content = df.to_csv(sep='|', index=False)
-                return pipe_content, "txt (tab-delimited, converted to pipe)"
-            
-            # Check if it's comma-delimited
-            elif ',' in content.split('\n')[0]:
-                df = pd.read_csv(StringIO(content))
-                pipe_content = df.to_csv(sep='|', index=False)
-                return pipe_content, "txt (comma-delimited, converted to pipe)"
-            
-            else:
-                return content, "txt (unknown delimiter)"
-                
-        elif file_ext == 'csv':
-            # Read CSV and convert to pipe-delimited
-            df = pd.read_csv(file)
-            pipe_content = df.to_csv(sep='|', index=False)
-            return pipe_content, "csv (converted to pipe)"
-            
-        elif file_ext == 'tsv':
-            # Read TSV and convert to pipe-delimited
-            df = pd.read_csv(file, sep='\t')
-            pipe_content = df.to_csv(sep='|', index=False)
-            return pipe_content, "tsv (converted to pipe)"
-            
-        elif file_ext in ['xlsx', 'xls']:
-            # Read Excel and convert to pipe-delimited
-            df = pd.read_excel(file, engine='openpyxl' if file_ext == 'xlsx' else None)
-            pipe_content = df.to_csv(sep='|', index=False)
-            return pipe_content, f"{file_ext} (converted to pipe)"
-            
-        else:
-            raise ValueError(f"Unsupported file format: {file_ext}")
-            
-    except Exception as e:
-        raise Exception(f"Error converting file: {str(e)}")
+check_password()
 
-# Validation prompts for each file type
-VALIDATION_PROMPTS = {
-    "case_picklist": """You are a data validation expert for AssistIQ integration files. Validate the Case Pick Lists file against exact specifications.
+# ─── Auto logout 15 mins ────────────────────────────────────────────────────
+TIMEOUT = 15 * 60
+if "last_activity" not in st.session_state:
+    st.session_state.last_activity = time.time()
+if time.time() - st.session_state.last_activity > TIMEOUT:
+    st.session_state.authenticated = False
+    st.rerun()
+st.session_state.last_activity = time.time()
 
-<file_specification>
-FILE: Case Picklists Data Extract
+if st.sidebar.button("Logout"):
+    st.session_state.authenticated = False
+    st.rerun()
 
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
-DELIMITER: Pipe (|)
-LINE ENDING: Newline
-EXTRACTION: All cases scheduled for <daterun> and <daterun> + 3 days
-FREQUENCY: Daily (5-6am local time)
+# ─── Shared Claude client ────────────────────────────────────────────────────
+client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| case_id             | Y        | Unique case identifier               | String                    | Non-empty, unique per case          |
-| case_timestamp      | Y        | Scheduled case time in UTC           | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| picklist_id         | Y        | Case pick list identifier            | String                    | Non-empty                           |
-| procedure_id        | Y        | Procedure identifier                 | String                    | Non-empty                           |
-| primary_provider_id | Y        | Primary provider ID                  | String                    | Non-empty                           |
-| supply_id           | Y        | Supply/product identifier            | String                    | Non-empty                           |
-| is_implant          | Y        | Implant flag                         | Boolean                   | true/false, TRUE/FALSE, 1/0, Y/N    |
-| open_qty            | Y        | Open quantity                        | Integer                   | >= 0, whole number                  |
-| hold_qty            | Y        | Hold/PRN quantity                    | Integer                   | >= 0, whole number                  |
-| created_ts          | Y        | Record created timestamp UTC         | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp UTC         | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime, >= created_ts   |
-</file_specification>
+# ════════════════════════════════════════════════════════════════════════════
+# FEW-SHOT EXAMPLES (all 4 real Northwell pairs from Sean)
+# ════════════════════════════════════════════════════════════════════════════
+FEW_SHOT = """
+You are an HL7-to-JSON parser for AssistIQ surgical supply platform.
+Convert SIU HL7 messages into the exact AssistIQ appointment JSON format.
 
-Validate the file thoroughly and provide detailed feedback.""",
+Below are 4 real examples showing the exact input HL7 and expected JSON output.
+Study these carefully — your output must match this structure precisely.
 
-    "charge_capture": """You are a data validation expert for AssistIQ integration files. Validate the Charge Capture file against exact specifications.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114142|63263|SIU^S14|334502.25676|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+DG1|1||^Generalized abdominal pain [R10.84]|Generalized abdominal pain [R10.84]||^95;ORC
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
 
-<file_specification>
-FILE: Charge Capture Data
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
-DELIMITER: Pipe (|)
-EXTRACTION: All charges from previous 14 days
-
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| case_id             | Y        | Unique case identifier               | String                    | Non-empty                           |
-| supply_id           | Y        | Supply/product identifier            | String                    | Non-empty                           |
-| quantity_used       | Y        | Quantity used                        | Integer                   | > 0, whole number                   |
-| quantity_wasted     | N        | Quantity wasted                      | Integer                   | >= 0 if present                     |
-| unit_price          | Y        | Price per unit                       | Decimal                   | >= 0, max 2 decimals                |
-| total_price         | Y        | Total price                          | Decimal                   | >= 0, max 2 decimals                |
-| is_implant          | Y        | Implant flag                         | Boolean                   | true/false, 1/0, Y/N                |
-| lot_number          | N        | Lot number (implants)                | String                    | Max 50 chars if present             |
-| serial_number       | N        | Serial number (implants)             | String                    | Max 50 chars if present             |
-| expiry_date         | N        | Expiration date                      | yyyy-MM-dd                | Valid future date if present        |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-</file_specification>
-
-Validate the file thoroughly and provide detailed feedback.""",
-
-    "preference_cards": """You are a data validation expert for AssistIQ integration files. Validate the Preference Cards file against exact specifications.
-
-<file_specification>
-FILE: Preference Cards
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
-DELIMITER: Pipe (|)
-
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| preference_card_id  | Y        | Unique preference card ID            | String                    | Non-empty                           |
-| procedure_id        | Y        | Procedure identifier                 | String                    | Non-empty                           |
-| procedure_name      | Y        | Procedure name                       | String                    | Non-empty, max 255 chars            |
-| primary_provider_id | Y        | Provider/surgeon ID                  | String                    | Non-empty                           |
-| supply_id           | Y        | Supply/product ID                    | String                    | Non-empty                           |
-| open_qty            | Y        | Preferred open quantity              | Integer                   | >= 0                                |
-| hold_qty            | Y        | Preferred hold quantity              | Integer                   | >= 0                                |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-</file_specification>
-
-Validate the file thoroughly and provide detailed feedback.""",
-
-    "product_master": """You are a data validation expert for AssistIQ integration files. Validate the Product Master file against exact specifications.
-
-<file_specification>
-FILE: Product Master
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
-DELIMITER: Pipe (|)
-
-REQUIRED FIELDS:
-| Column                      | Required | Description                          | Format                    | Validation Rules                    |
-|-----------------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| productId                   | Y        | Unique product identifier            | String                    | Non-empty, unique                   |
-| productDesc                 | Y        | Product description                  | String                    | Non-empty, max 255 chars            |
-| typeCode                    | Y        | Item type code                       | String                    | Non-empty                           |
-| typeDesc                    | Y        | Item type description                | String                    | Non-empty                           |
-| price                       | Y        | Unit price                           | Decimal                   | >= 0, max 2 decimals                |
-| supplierCatalogNumber       | N        | Supplier SKU                         | String                    | Max 50 chars if present             |
-| supplierId                  | N        | Supplier ID                          | String                    | Max 50 chars if present             |
-| supplierDesc                | N        | Supplier name                        | String                    | Max 100 chars if present            |
-| manufacturerCatalogNumber   | N        | Manufacturer SKU                     | String                    | Max 50 chars if present             |
-| manufacturerId              | N        | Manufacturer ID                      | String                    | Max 50 chars if present             |
-| manufacturer                | N        | Manufacturer name                    | String                    | Max 100 chars if present            |
-| gtin                        | N        | GTIN barcode                         | String                    | 12-14 numeric digits if present     |
-| isImplant                   | Y        | Implant flag                         | Boolean                   | true/false, 1/0, Y/N                |
-</file_specification>
-
-Validate the file thoroughly and provide detailed feedback.""",
-
-    "service_lines": """You are a data validation expert for AssistIQ integration files. Validate the Service Lines file against exact specifications.
-
-<file_specification>
-FILE: Service Lines
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
-DELIMITER: Pipe (|)
-
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| service_line_id     | Y        | Unique service line identifier       | String                    | Non-empty, unique                   |
-| service_line_name   | Y        | Service line name                    | String                    | Non-empty, max 100 chars            |
-| service_line_abbrev | Y        | Service line abbreviation            | String                    | Non-empty, max 20 chars             |
-| procedure_id        | Y        | Procedure identifier                 | String                    | Non-empty                           |
-| procedure_name      | Y        | Procedure name                       | String                    | Non-empty, max 255 chars            |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-</file_specification>
-
-Validate the file thoroughly and provide detailed feedback.""",
-
-    "service_line_providers": """You are a data validation expert for AssistIQ integration files. Validate the Service Line Providers file against exact specifications.
-
-<file_specification>
-FILE: Service Line Providers
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
-DELIMITER: Pipe (|)
-
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| service_line_id     | Y        | Service line identifier              | String                    | Non-empty                           |
-| service_line_name   | Y        | Service line name                    | String                    | Non-empty                           |
-| provider_id         | Y        | Provider identifier                  | String                    | Non-empty                           |
-| provider_first_name | Y        | Provider first name                  | String                    | Non-empty, max 100 chars            |
-| provider_middle_name| N        | Provider middle name                 | String                    | Max 100 chars if present            |
-| provider_last_name  | Y        | Provider last name                   | String                    | Non-empty, max 100 chars            |
-| is_active           | Y        | Active status                        | Boolean                   | true/false, 1/0, Y/N                |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-</file_specification>
-
-Validate the file thoroughly and provide detailed feedback."""
-}
-
-FILE_TYPE_INFO = {
-    "case_picklist": {
-        "name": "Case Pick Lists",
-        "description": "Daily case schedules with supply lists for next 72 hours",
-        "example_filename": "2026-02-10.txt"
-    },
-    "charge_capture": {
-        "name": "Charge Capture",
-        "description": "Product usage and charges from previous 14 days",
-        "example_filename": "2026-02-10.txt"
-    },
-    "preference_cards": {
-        "name": "Preference Cards",
-        "description": "Surgeon-specific supply preferences for procedures",
-        "example_filename": "2026-02-10.txt"
-    },
-    "product_master": {
-        "name": "Product Master",
-        "description": "Complete product catalog from ERP system",
-        "example_filename": "2026-02-10.txt"
-    },
-    "service_lines": {
-        "name": "Service Lines",
-        "description": "Service lines with associated procedures",
-        "example_filename": "2026-02-10.txt"
-    },
-    "service_line_providers": {
-        "name": "Service Line Providers",
-        "description": "Providers/doctors for each service line",
-        "example_filename": "2026-02-10.txt"
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
     }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:41:57.893-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25676",
+      "createdAt": "2026-03-09T11:41:42.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
 }
 
-def validate_file(file_content, filename, file_type):
-    """Send file to Claude for validation"""
-    
-    client = get_claude_client()
-    
-    prompt = f"""{VALIDATION_PROMPTS[file_type]}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114147|63263|SIU^S14|334502.25677|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
 
-<sample_file>
-Filename: {filename}
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
+    }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:41:58.317-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25677",
+      "createdAt": "2026-03-09T11:41:47.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
+}
 
-Content:
-{file_content[:15000]}
-</sample_file>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 3
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114017|63263|SIU^S14|334502.25675|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
 
-Provide validation results in this ACTIONABLE format:
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
+    }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:40:22.824-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25675",
+      "createdAt": "2026-03-09T11:40:17.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
+}
 
-## 🎯 VALIDATION SUMMARY
-Status: [✅ PASS / ❌ FAIL]
-Errors Found: [number]
-Total Rows: [number]
-Ready for Upload: [YES/NO]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 4
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114012|63263|SIU^S14|334502.25674|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
 
----
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
+    }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:40:12.811-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25674",
+      "createdAt": "2026-03-09T11:40:12.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
+}
 
-## ❌ CRITICAL ISSUES (Fix These First)
-
-[Only list critical blocking errors. Maximum 5. If none, say "None"]
-
-**Issue #1: [Title]**
-Problem: [What's wrong]
-Fix: [Exact action]
-
----
-
-## 📋 COLUMN ERRORS
-
-[Show ONLY columns with errors in table. If all correct, say "All columns correct"]
-
-| Your Column Name | Expected Name | Fix Action |
-|------------------|---------------|------------|
-| SUPPLY_ID        | supply_id     | Change to lowercase |
-| used_qty         | quantity_used | Rename column |
-
----
-
-## 🔍 MISSING COLUMNS
-
-[List ONLY missing required columns. If none, say "No missing columns"]
-
-Must Add:
-1. **column_name** - Description (format)
-
----
-
-## 🚨 DATA ERRORS BY ROW
-
-[Show ONLY first 10 rows with errors in table. If none, say "No data errors"]
-
-| Row | Column | Current Value | Error | Fix |
-|-----|--------|---------------|-------|-----|
-| 2   | date   | 7/2/2025      | Wrong format | Change to 2025-07-02T12:00:00 |
-
----
-
-## ✅ STEP-BY-STEP FIX PLAN
-
-**Step 1: [Action]**
-[Detailed instructions]
-
-**Step 2: [Action]**
-[Detailed instructions]
-
----
-
-## 📊 QUICK STATS
-- Rows validated: [number]
-- Rows with errors: [number]
-- Error rate: [percentage]%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD MAPPING RULES (derived from examples above)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+id                            → SCH field 2
+status                        → SCH field 26 component 1: "Sch"/"Scheduled" = "booked", "Cancelled" = "cancelled", "Pending" = "pending". Unrecognized codes: use raw value + flag as low confidence.
+duration (top-level)          → AIS field 9 in seconds ÷ 60 = minutes (10800 → 180)
+startDateTime                 → AIS field 4 (YYYYMMDDHHMMSS) → ISO 8601 format YYYY-MM-DDTHH:MM:SS-0400
+endDateTime                   → startDateTime + duration minutes
+reason[0].id                  → AIS field 1
+reason[0].duration            → same as top-level duration
+reason[0].startDateTime       → same as top-level startDateTime
+reason[0].endDateTime         → same as top-level endDateTime
+reason[0].note                → always []
+reason[0].resourceType        → always "Procedure"
+reason[0].serviceCode.code    → AIS field 3 component 1
+reason[0].serviceCode.display → AIS field 3 component 2
+reason[0].serviceLine         → PV1 field 10
+practitioner.id               → AIP field 3 component 1
+practitioner.name.family      → AIP field 3 component 2
+practitioner.name.given       → AIP field 3 component 3
+practitioner.role.code        → AIP field 5 component 1
+practitioner.role.display     → AIP field 5 component 2
+practitioner.resourceType     → always "Practitioner"
+location.room                 → AIL field 3 component 2
+location.display              → same as location.room
+location.facility             → AIL field 3 component 4
+patient.*                     → from PID fields, preserve * exactly if already masked
+metadata.source               → "{MSH field 4 component 1}-EPIC-OR"
+metadata.createdAt            → MSH field 7 as ISO 8601 (add milliseconds .000 if not present)
+metadata.HL7Message.sourceId  → MSH field 10
+metadata.HL7Message.createdAt → MSH field 7 as ISO 8601 with .000 milliseconds
+metadata.HL7Message.rawData   → always "*"
+metadata.HL7Message.id        → always null (system-assigned on ingestion)
+metadata.connectorRevision    → always null (system-assigned on ingestion)
+resourceType                  → always "Appointment"
 """
-    
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    return message.content[0].text
 
-FIXED_SCHEMA = {
-    "case_id": "Unique case/scheduling identifier",
-    "patient_id": "Patient medical record number",
-    "patient_name": "Full patient name",
-    "surgeon": "Primary surgeon name",
-    "procedure": "Procedure or surgery name",
-    "room": "OR or procedure room",
-    "scheduled_time": "Scheduled date and time (ISO format)",
-    "department": "Hospital department or service",
-    "status": "Case status (scheduled, cancelled, modified)",
-    "attending_physician": "Attending physician if different from surgeon",
-}
+SAMPLE_HL7 = """MSH|^~\\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114142|63263|SIU^S14|334502.25676|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+DG1|1||^Generalized abdominal pain [R10.84]|Generalized abdominal pain [R10.84]||^95;ORC
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S"""
 
-SAMPLE_HL7 = """MSH|^~\\&|EPIC|BAPTIST|BRIDGES|BRIDGES|20260306090000||SIU^S12|123456|P|2.3
-SCH|123456||20260306090000|60|MIN||^^^20260306090000^20260306100000
-PID|1||MRN98765^^^Baptist^MR||Smith^John^A||19700101|M
-PV1|1|I|OR-3^OR-3^OR-3|||||||Smith^Dr. Jane^^^MD
-AIG|1||12345^Dr. Jane Smith^EPIC
-AIL|1||OR-3^Operating Room 3^EPIC
-TQ1|1|||20260306090000|20260306100000
-ZPR|CABG^Coronary Artery Bypass Graft|CARD|SCHEDULED"""
+# ════════════════════════════════════════════════════════════════════════════
+# APP
+# ════════════════════════════════════════════════════════════════════════════
+st.title("AssistIQ — Self Serve Integration Tool")
+tab1, tab2 = st.tabs(["📁 Flat File Validator", "🔄 HL7 → JSON Parser"])
 
-def parse_hl7_message(hl7_text):
-    """Send HL7 message to Claude for parsing and mapping"""
-    client = get_claude_client()
+# ── Tab 1: Flat File Validator ───────────────────────────────────────────────
+with tab1:
+    st.header("Flat File Validator")
+    st.info("Upload your Epic integration flat files to validate against Epic V2 specs.")
 
-    prompt = f"""You are an HL7 message parser for a surgical supply tracking system. Parse the following HL7 SIU message and map it to the fixed JSON schema below.
+    FILE_TYPES = ["Case Picklists", "Charge Capture", "Preference Cards",
+                  "Product Master", "Service Lines", "Service Line Providers"]
+    file_type = st.selectbox("Select File Type", FILE_TYPES)
+    uploaded_file = st.file_uploader("Upload File", type=["csv", "xlsx", "txt"])
 
-TARGET SCHEMA:
-{str(FIXED_SCHEMA)}
+    if uploaded_file and st.button("🔍 Validate File"):
+        with st.spinner("Validating..."):
+            content = uploaded_file.read().decode("utf-8", errors="ignore")
+            prompt = f"""You are an Epic V2 integration file validator for AssistIQ.
+File type: {file_type}
+File content:
+{content[:3000]}
 
-HL7 MESSAGE:
-{hl7_text}
+Return ONLY a JSON object with:
+- "valid": true/false
+- "errors": list of objects with "row", "field", "issue"
+- "warnings": list of warning objects
+- "summary": brief summary string
+- "confidence": "high", "medium", or "low"
+No markdown, no explanation."""
 
-Respond ONLY with a valid JSON object in this exact structure (no markdown, no backticks):
-{{
-  "mapped": {{
-    "case_id": "...",
-    "patient_id": "...",
-    "patient_name": "...",
-    "surgeon": "...",
-    "procedure": "...",
-    "room": "...",
-    "scheduled_time": "...",
-    "department": "...",
-    "status": "...",
-    "attending_physician": "..."
-  }},
-  "field_explanations": {{
-    "case_id": "Found in SCH segment field 1"
-  }},
-  "unmapped_fields": ["field_name"],
-  "unmapped_reasons": {{
-    "field_name": "Segment not present in message"
-  }},
-  "confidence": "high",
-  "notes": "Any important observations"
-}}"""
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            raw = response.content[0].text.strip().replace("```json","").replace("```","")
+            try:
+                result = json.loads(raw)
+                st.success("✅ File is valid") if result.get("valid") else st.error("❌ Validation failed")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.subheader("Errors")
+                    if result.get("errors"):
+                        for e in result["errors"]:
+                            st.error(f"Row {e.get('row','?')}: {e.get('field','?')} — {e.get('issue','?')}")
+                    else:
+                        st.success("No errors found")
+                with c2:
+                    st.subheader("Warnings")
+                    if result.get("warnings"):
+                        for w in result["warnings"]:
+                            st.warning(str(w))
+                    else:
+                        st.info("No warnings")
+                st.info(f"Summary: {result.get('summary','')}")
+            except:
+                st.code(raw)
 
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    import json
-    text = message.content[0].text.replace("```json", "").replace("```", "").strip()
-    return json.loads(text)
-
-
-# Configure page
-st.set_page_config(
-    page_title="AIQ File Validator",
-    page_icon="✅",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .main {
-        padding: 2rem;
-    }
-    .stButton>button {
-        width: 100%;
-        background-color: #0066cc;
-        color: white;
-        height: 3em;
-        font-size: 18px;
-        font-weight: bold;
-    }
-    .success-box {
-        padding: 1rem;
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        border-radius: 0.25rem;
-        color: #155724;
-    }
-    .error-box {
-        padding: 1rem;
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        border-radius: 0.25rem;
-        color: #721c24;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Header
-st.title("🏥 AssistIQ Integration Tools")
-st.markdown("**Flat file validation and HL7 message parsing in one place**")
-st.markdown("---")
-
-tab1, tab2 = st.tabs(["📄 Flat File Validator", "🔬 HL7 Parser"])
-
+# ── Tab 2: HL7 → JSON Parser ─────────────────────────────────────────────────
 with tab2:
-    st.markdown("### HL7 → JSON Parser")
-    st.markdown("Paste a raw SIU message to map it to the AssistIQ case schema.")
+    st.header("HL7 → JSON Parser")
+    st.caption("Converts SIU HL7 scheduling messages into AssistIQ appointment JSON format.")
 
-    col_in, col_out = st.columns(2)
+    hospital = st.text_input("Hospital / Facility (optional)", placeholder="e.g. Baptist, Northwell")
 
-    with col_in:
-        st.markdown("**Raw HL7 Input**")
-        if st.button("Load Sample Message"):
-            st.session_state.hl7_input = SAMPLE_HL7
-        hl7_input = st.text_area(
-            "Paste HL7 message here",
-            value=st.session_state.get("hl7_input", ""),
-            height=300,
-            placeholder="MSH|^~\\&|EPIC|BAPTIST...",
-            label_visibility="collapsed"
-        )
+    if st.button("Load Sample Message"):
+        st.session_state["hl7_input"] = SAMPLE_HL7
 
-        st.markdown("**Fixed Target Schema**")
-        st.caption(" · ".join(FIXED_SCHEMA.keys()))
+    hl7_input = st.text_area(
+        "Paste HL7 Message",
+        value=st.session_state.get("hl7_input", ""),
+        height=280,
+        placeholder="Paste your SIU HL7 message here..."
+    )
 
-        if st.button("🔍 Parse & Map", type="primary"):
-            if hl7_input.strip():
-                with st.spinner("Parsing message..."):
-                    try:
-                        result = parse_hl7_message(hl7_input)
-                        st.session_state.hl7_result = result
-                    except Exception as e:
-                        st.error(f"Parse failed: {str(e)}")
-            else:
-                st.warning("Please paste an HL7 message first.")
+    if st.button("🔄 Parse to JSON", type="primary"):
+        if not hl7_input.strip():
+            st.warning("Please paste an HL7 message first.")
+        else:
+            with st.spinner("Parsing..."):
+                prompt = f"""{FEW_SHOT}
 
-    with col_out:
-        if "hl7_result" in st.session_state:
-            result = st.session_state.hl7_result
-            confidence = result.get("confidence", "unknown")
-            conf_color = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(confidence, "⚪")
+Now parse the new HL7 message below using the EXACT same JSON structure and field mapping rules.
+Hospital context: {hospital if hospital else "not specified"}
 
-            st.markdown(f"**Confidence: {conf_color} {confidence.upper()}**")
+HL7 MESSAGE TO PARSE:
+{hl7_input}
 
-            out_tab1, out_tab2, out_tab3 = st.tabs(["Mapped JSON", "Field Map", "Unmapped"])
-
-            with out_tab1:
-                import json
-                st.code(json.dumps(result.get("mapped", {}), indent=2), language="json")
-                st.download_button(
-                    "📥 Download JSON",
-                    data=json.dumps(result.get("mapped", {}), indent=2),
-                    file_name="mapped_case.json",
-                    mime="application/json"
+STRICT RULES:
+1. Output ONLY valid JSON — no markdown, no explanation, no code blocks
+2. Follow all mapping rules exactly as shown in the 4 examples
+3. Duration must be in MINUTES (divide AIS field 9 seconds by 60)
+4. metadata.HL7Message.id → always null
+5. metadata.connectorRevision → always null
+6. Never omit required fields — use null only if truly not found
+7. Preserve patient PID values exactly (keep * if masked)
+8. For any field you cannot confidently map, include it with your best guess AND add a sibling "_confidence" field: "low - <reason>"
+9. metadata.source should be "{hospital or MSH facility}-EPIC-OR"
+"""
+                response = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
                 )
 
-            with out_tab2:
-                explanations = result.get("field_explanations", {})
-                mapped = result.get("mapped", {})
-                if explanations:
-                    for field, explanation in explanations.items():
-                        with st.container():
-                            st.markdown(f"**{field}**: `{mapped.get(field, '—')}`")
-                            st.caption(explanation)
-                            st.divider()
-                else:
-                    st.info("No field explanations available.")
-                if result.get("notes"):
-                    st.info(f"📝 {result['notes']}")
+                raw = response.content[0].text.strip()
+                for tag in ["```json", "```"]:
+                    raw = raw.replace(tag, "")
+                raw = raw.strip()
 
-            with out_tab3:
-                unmapped = result.get("unmapped_fields", [])
-                reasons = result.get("unmapped_reasons", {})
-                if not unmapped:
-                    st.success("✅ All fields mapped successfully")
-                else:
-                    for field in unmapped:
-                        st.error(f"**{field}**: {reasons.get(field, 'Could not be determined')}")
-        else:
-            st.info("Output will appear here after parsing.")
+                try:
+                    parsed = json.loads(raw)
+                    low_conf = [k for k in parsed if "_confidence" in k]
 
-with tab1:
-    # Sidebar
-    with st.sidebar:
-        st.markdown("### 📖 How to Use")
-        st.markdown("""
-        1. **Select file type** from the dropdown
-        2. **Upload your .txt file** (pipe-delimited)
-        3. **Click Validate File** button
-        4. **Review results** and fix any errors
-        5. **Re-upload** until validation passes
-        """)
-        
-        st.markdown("---")
-        
-        st.markdown("### ✅ What Gets Validated")
-        st.markdown("""
-        - ✓ Filename format (YYYY-MM-DD.txt)
-        - ✓ File delimiter (pipe |)
-        - ✓ Required columns present
-        - ✓ Column name spelling
-        - ✓ Data types (String, Integer, Boolean, Date)
-        - ✓ Data completeness (no empty required fields)
-        - ✓ Business rules (dates, relationships)
-        - ✓ Timestamp formats (UTC)
-        """)
-        
-        st.markdown("---")
-        
-        st.markdown("### 📞 Support")
-        st.markdown("""
-        Having issues? Contact:
-        - **Email:** support@assistiq.com
-        - **Slack:** #integration-help
-        """)
+                    if low_conf:
+                        st.warning(f"⚠️ {len(low_conf)} field(s) flagged for manual review")
+                    else:
+                        st.success("✅ Parsed successfully")
 
-    # Main content
-    col1, col2 = st.columns([2, 1])
+                    out1, out2 = st.tabs(["📋 JSON Output", "ℹ️ Field Summary"])
 
-    with col1:
-        # File type selector
-        file_type = st.selectbox(
-            "**Select File Type** 📁",
-            list(FILE_TYPE_INFO.keys()),
-            format_func=lambda x: FILE_TYPE_INFO[x]["name"]
-        )
-        
-        # Show file info
-        info = FILE_TYPE_INFO[file_type]
-        st.info(f"**{info['name']}**: {info['description']}")
-        st.caption(f"📄 Example filename: `{info['example_filename']}`")
+                    with out1:
+                        st.json(parsed)
+                        st.download_button(
+                            "⬇️ Download JSON",
+                            data=json.dumps(parsed, indent=2),
+                            file_name=f"appointment_{parsed.get('id','unknown')}.json",
+                            mime="application/json"
+                        )
 
-    with col2:
-        st.markdown("### 📊 Quick Stats")
-        if 'validation_count' not in st.session_state:
-            st.session_state.validation_count = 0
-        if 'pass_count' not in st.session_state:
-            st.session_state.pass_count = 0
-        
-        st.metric("Files Validated", st.session_state.validation_count)
-        st.metric("Files Passed", st.session_state.pass_count)
+                    with out2:
+                        reason = parsed.get("reason", [{}])[0]
+                        practitioner = reason.get("practitioner", {})
+                        surgeon_name = f"{practitioner.get('name',{}).get('family','')} {practitioner.get('name',{}).get('given','')}".strip()
+                        fields = {
+                            "Appointment ID": parsed.get("id"),
+                            "Status": parsed.get("status"),
+                            "Duration (mins)": parsed.get("duration"),
+                            "Start": parsed.get("startDateTime"),
+                            "End": parsed.get("endDateTime"),
+                            "Procedure": reason.get("serviceCode", {}).get("display"),
+                            "Service Line": reason.get("serviceLine"),
+                            "Surgeon": surgeon_name or "—",
+                            "OR Room": parsed.get("location", {}).get("room"),
+                            "Facility": parsed.get("location", {}).get("facility"),
+                            "Source": parsed.get("metadata", {}).get("source"),
+                            "HL7 Source ID": parsed.get("metadata", {}).get("HL7Message", {}).get("sourceId"),
+                        }
+                        for label, value in fields.items():
+                            c1, c2 = st.columns([1, 2])
+                            with c1:
+                                st.markdown(f"**{label}**")
+                            with c2:
+                                st.markdown(str(value) if value else "—")
 
-    st.markdown("---")
-
-    # File uploader
-    uploaded_file = st.file_uploader(
-        "**Upload File** 📤",
-        type=["txt", "csv", "tsv", "xlsx", "xls"],
-        help="Upload your data file in any format: TXT (pipe-delimited), CSV, TSV, Excel (.xlsx/.xls)"
-    )
-
-    if uploaded_file is not None:
-        # Convert file to pipe-delimited format
-        try:
-            file_content, conversion_info = convert_to_pipe_delimited(uploaded_file, uploaded_file.name)
-            lines = file_content.split('\n')
-            
-            # File stats
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Filename", uploaded_file.name)
-            with col2:
-                st.metric("Format", conversion_info)
-            with col3:
-                st.metric("File Size", f"{len(file_content)} bytes")
-            with col4:
-                st.metric("Total Lines", len(lines))
-            
-            # Show format info if converted
-            if "converted" in conversion_info:
-                st.info(f"ℹ️ File automatically converted from {uploaded_file.name.split('.')[-1].upper()} to pipe-delimited format for validation")
-            
-            # File preview
-            with st.expander("📄 **File Preview** (first 20 lines, pipe-delimited)", expanded=False):
-                preview_lines = '\n'.join(lines[:20])
-                st.code(preview_lines, language='text')
-            
-            st.markdown("---")
-            
-            # Validate button
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                if st.button("🔍 **VALIDATE FILE**", type="primary"):
-                    with st.spinner("🔄 Validating file with Claude AI... This may take 10-30 seconds..."):
-                        try:
-                            result = validate_file(file_content, uploaded_file.name, file_type)
-                            
-                            # Update stats
-                            st.session_state.validation_count += 1
-                            
-                            # Show results
+                        if low_conf:
                             st.markdown("---")
-                            st.markdown("## 📋 Validation Results")
-                            
-                            # Determine if passed
-                            first_line = result.split('\n')[0]
-                            is_pass = "PASS" in first_line
-                            
-                            if is_pass:
-                                st.session_state.pass_count += 1
-                                st.success("### ✅ Validation Passed!")
-                                st.balloons()
-                            else:
-                                st.error("### ❌ Validation Failed - Errors Found")
-                            
-                            # Show detailed results
-                            st.markdown(result)
-                            
-                            # Action buttons
-                            st.markdown("---")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if is_pass:
-                                    st.success("✅ **This file is ready for upload to AssistIQ**")
-                                else:
-                                    st.warning("⚠️ **Please fix errors and re-validate**")
-                            
-                            with col2:
-                                st.download_button(
-                                    label="📥 Download Validation Report",
-                                    data=result,
-                                    file_name=f"validation_report_{uploaded_file.name}.txt",
-                                    mime="text/plain"
-                                )
-                            
-                        except Exception as e:
-                            st.error(f"❌ **Error during validation:** {str(e)}")
-                            st.exception(e)
-        
-        except UnicodeDecodeError:
-            st.error("❌ **Error:** Unable to read file. Please ensure it's a valid text or Excel file with UTF-8 encoding.")
-        except Exception as e:
-            st.error(f"❌ **Error reading/converting file:** {str(e)}")
+                            st.markdown("**⚠️ Needs manual review:**")
+                            for f in low_conf:
+                                st.warning(f"{f}: {parsed[f]}")
 
-    else:
-        # Instructions when no file uploaded
-        st.info("👆 **Please upload a file to begin validation**")
-        
-        st.markdown("### 📝 Supported File Formats")
-        st.markdown("""
-        Upload files in any of these formats:
-        - **TXT:** Pipe (|), comma, or tab delimited
-        - **CSV:** Comma-separated values
-        - **TSV:** Tab-separated values  
-        - **Excel:** .xlsx or .xls files
-        
-        **All formats are automatically converted to pipe-delimited for validation.**
-        
-        **Additional Requirements:**
-        - **Encoding:** UTF-8 (for text files)
-        - **Filename:** YYYY-MM-DD.txt format (e.g., 2026-02-10.txt)
-        - **First row:** Must contain column headers
-        """)
-
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #666; padding: 1rem;'>
-    <small>AssistIQ Integration Tools v2.0 | Powered by Claude AI | 
-    <a href='https://www.assistiq.com' target='_blank'>www.assistiq.com</a></small>
-</div>
-""", unsafe_allow_html=True)
+                except json.JSONDecodeError:
+                    st.error("Could not parse response as JSON. Raw output:")
+                    st.code(raw)
