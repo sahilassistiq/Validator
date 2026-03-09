@@ -436,7 +436,7 @@ STRICT RULES:
 6. Never omit required fields — use null only if truly not found
 7. Preserve patient PID values exactly (keep * if masked)
 8. For any field you cannot confidently map, include it with your best guess AND add a sibling "_confidence" field: "low - <reason>"
-9. metadata.source should be "{hospital or MSH facility}-EPIC-OR"
+9. metadata.source should be "{{hospital or MSH facility}}-EPIC-OR"
 """
                 response = client.messages.create(
                     model="claude-sonnet-4-20250514",
