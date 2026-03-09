@@ -17,6 +17,20 @@ def check_password():
 
 check_password()
 
+import time
+
+# Auto logout after 15 mins inactivity
+TIMEOUT = 15 * 60  # 15 minutes in seconds
+
+if "last_activity" not in st.session_state:
+    st.session_state.last_activity = time.time()
+
+if time.time() - st.session_state.last_activity > TIMEOUT:
+    st.session_state.authenticated = False
+    st.rerun()
+
+st.session_state.last_activity = time.time()
+
 import streamlit as st
 import anthropic
 import os
