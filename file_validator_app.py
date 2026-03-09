@@ -400,9 +400,24 @@ No markdown, no explanation."""
 # ── Tab 2: HL7 → JSON Parser ─────────────────────────────────────────────────
 with tab2:
     st.header("HL7 → JSON Parser")
-    st.caption("Converts SIU HL7 scheduling messages into AssistIQ appointment JSON format.")
+    st.caption("Converts HL7 scheduling messages into AssistIQ appointment JSON format.")
 
-    hospital = st.text_input("Hospital / Facility (optional)", placeholder="e.g. Baptist, Northwell")
+    col1, col2 = st.columns(2)
+    with col1:
+        hospital = st.text_input("Hospital / Facility (optional)", placeholder="e.g. Baptist, Northwell")
+    with col2:
+        msg_type = st.selectbox("Message Type", [
+            "SIU^S14 — Schedule Add/Modify",
+            "SIU^S15 — Schedule Cancel",
+            "SIU^S17 — Schedule Delete",
+            "SIU^S12 — New Appointment",
+            "ADT^A01 — Admit/Visit",
+            "ADT^A08 — Update Patient Info",
+            "ADT^A03 — Discharge",
+            "DFT^P03 — Post Detail Financial",
+            "ORM^O01 — Order Message",
+            "Other",
+        ])
 
     if st.button("Load Sample Message"):
         st.session_state["hl7_input"] = SAMPLE_HL7
@@ -411,7 +426,7 @@ with tab2:
         "Paste HL7 Message",
         value=st.session_state.get("hl7_input", ""),
         height=280,
-        placeholder="Paste your SIU HL7 message here..."
+        placeholder="Paste your HL7 message here..."
     )
 
     if st.button("🔄 Parse to JSON", type="primary"):
@@ -423,6 +438,7 @@ with tab2:
 
 Now parse the new HL7 message below using the EXACT same JSON structure and field mapping rules.
 Hospital context: {hospital if hospital else "not specified"}
+Message type: {msg_type}
 
 HL7 MESSAGE TO PARSE:
 {hl7_input}
