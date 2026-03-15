@@ -22,19 +22,64 @@ st.set_page_config(
 TIMEOUT = 15 * 60  # 15 minutes
 
 def check_password():
+
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+
     if not st.session_state.authenticated:
-        st.title("🔒 Login")
+
+        # ---- CSS Styling ----
+        st.markdown("""
+        <style>
+
+        .login-container {
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            height:70vh;
+        }
+
+        .login-box {
+            background-color:white;
+            padding:40px;
+            border-radius:12px;
+            box-shadow:0px 4px 20px rgba(0,0,0,0.1);
+            width:400px;
+            text-align:center;
+        }
+
+        .logo {
+            width:120px;
+            margin-bottom:20px;
+        }
+
+        </style>
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="login-container">', unsafe_allow_html=True)
+        st.markdown('<div class="login-box">', unsafe_allow_html=True)
+
+        # Logo
+        st.image("logo.png", width=140)
+
+        st.title("🔒 SST Validator Login")
+
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
-        if st.button("Login"):
+
+        if st.button("Login", use_container_width=True):
+
             if username == st.secrets["USERNAME"] and password == st.secrets["PASSWORD"]:
                 st.session_state.authenticated = True
                 st.session_state.last_activity = time.time()
                 st.rerun()
+
             else:
                 st.error("Invalid username or password")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
         st.stop()
 
 check_password()
