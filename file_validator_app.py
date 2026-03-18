@@ -1,72 +1,100 @@
 import streamlit as st
 import anthropic
 import os
+import json
+import time
 import pandas as pd
 from io import StringIO
 
-# Initialize Claude client
+# ════════════════════════════════════════════════════════════════════════════
+# PAGE CONFIG  (must be first st call)
+# ════════════════════════════════════════════════════════════════════════════
+st.set_page_config(
+    page_title="AIQ Integration Tools",
+    page_icon="✅",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ════════════════════════════════════════════════════════════════════════════
+# AUTH — Login / Auto-logout / Logout button
+# ════════════════════════════════════════════════════════════════════════════
+TIMEOUT = 15 * 60  # 15 minutes
+
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if not st.session_state.authenticated:
+        st.title("🔒 Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if username == st.secrets["USERNAME"] and password == st.secrets["PASSWORD"]:
+                st.session_state.authenticated = True
+                st.session_state.last_activity = time.time()
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+        st.stop()
+
+check_password()
+
+if "last_activity" not in st.session_state:
+    st.session_state.last_activity = time.time()
+if time.time() - st.session_state.last_activity > TIMEOUT:
+    st.session_state.authenticated = False
+    st.rerun()
+st.session_state.last_activity = time.time()
+
+if st.sidebar.button("Logout"):
+    st.session_state.authenticated = False
+    st.rerun()
+
+# ════════════════════════════════════════════════════════════════════════════
+# CLAUDE CLIENT
+# ════════════════════════════════════════════════════════════════════════════
 @st.cache_resource
 def get_claude_client():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        st.error("⚠️ ANTHROPIC_API_KEY environment variable not set!")
+        st.error("⚠️ ANTHROPIC_API_KEY not set!")
         st.stop()
     return anthropic.Anthropic(api_key=api_key)
 
+# ════════════════════════════════════════════════════════════════════════════
+# FLAT FILE VALIDATOR — helpers
+# ════════════════════════════════════════════════════════════════════════════
 def convert_to_pipe_delimited(file, filename):
     """Convert various file formats to pipe-delimited text"""
-    
     file_ext = filename.lower().split('.')[-1]
-    
     try:
         if file_ext == 'txt':
-            # Read as text - check if it's already pipe-delimited
             content = file.read().decode('utf-8')
-            
-            # Check if it's pipe-delimited
             if '|' in content.split('\n')[0]:
                 return content, "txt (pipe-delimited)"
-            
-            # Check if it's tab-delimited
             elif '\t' in content.split('\n')[0]:
                 df = pd.read_csv(StringIO(content), sep='\t')
-                pipe_content = df.to_csv(sep='|', index=False)
-                return pipe_content, "txt (tab-delimited, converted to pipe)"
-            
-            # Check if it's comma-delimited
+                return df.to_csv(sep='|', index=False), "txt (tab-delimited, converted to pipe)"
             elif ',' in content.split('\n')[0]:
                 df = pd.read_csv(StringIO(content))
-                pipe_content = df.to_csv(sep='|', index=False)
-                return pipe_content, "txt (comma-delimited, converted to pipe)"
-            
+                return df.to_csv(sep='|', index=False), "txt (comma-delimited, converted to pipe)"
             else:
                 return content, "txt (unknown delimiter)"
-                
         elif file_ext == 'csv':
-            # Read CSV and convert to pipe-delimited
             df = pd.read_csv(file)
-            pipe_content = df.to_csv(sep='|', index=False)
-            return pipe_content, "csv (converted to pipe)"
-            
+            return df.to_csv(sep='|', index=False), "csv (converted to pipe)"
         elif file_ext == 'tsv':
-            # Read TSV and convert to pipe-delimited
             df = pd.read_csv(file, sep='\t')
-            pipe_content = df.to_csv(sep='|', index=False)
-            return pipe_content, "tsv (converted to pipe)"
-            
+            return df.to_csv(sep='|', index=False), "tsv (converted to pipe)"
         elif file_ext in ['xlsx', 'xls']:
-            # Read Excel and convert to pipe-delimited
             df = pd.read_excel(file, engine='openpyxl' if file_ext == 'xlsx' else None)
-            pipe_content = df.to_csv(sep='|', index=False)
-            return pipe_content, f"{file_ext} (converted to pipe)"
-            
+            return df.to_csv(sep='|', index=False), f"{file_ext} (converted to pipe)"
         else:
             raise ValueError(f"Unsupported file format: {file_ext}")
-            
     except Exception as e:
         raise Exception(f"Error converting file: {str(e)}")
 
-# Validation prompts for each file type
+
 VALIDATION_PROMPTS = {
     "case_picklist": """You are a data validation expert for AssistIQ integration files. Validate the Case Pick Lists file against exact specifications.
 
@@ -221,47 +249,20 @@ REQUIRED FIELDS:
 | updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
 </file_specification>
 
-Validate the file thoroughly and provide detailed feedback."""
+Validate the file thoroughly and provide detailed feedback.""",
 }
 
 FILE_TYPE_INFO = {
-    "case_picklist": {
-        "name": "Case Pick Lists",
-        "description": "Daily case schedules with supply lists for next 72 hours",
-        "example_filename": "2026-02-10.txt"
-    },
-    "charge_capture": {
-        "name": "Charge Capture",
-        "description": "Product usage and charges from previous 14 days",
-        "example_filename": "2026-02-10.txt"
-    },
-    "preference_cards": {
-        "name": "Preference Cards",
-        "description": "Surgeon-specific supply preferences for procedures",
-        "example_filename": "2026-02-10.txt"
-    },
-    "product_master": {
-        "name": "Product Master",
-        "description": "Complete product catalog from ERP system",
-        "example_filename": "2026-02-10.txt"
-    },
-    "service_lines": {
-        "name": "Service Lines",
-        "description": "Service lines with associated procedures",
-        "example_filename": "2026-02-10.txt"
-    },
-    "service_line_providers": {
-        "name": "Service Line Providers",
-        "description": "Providers/doctors for each service line",
-        "example_filename": "2026-02-10.txt"
-    }
+    "case_picklist":          {"name": "Case Pick Lists",         "description": "Daily case schedules with supply lists for next 72 hours",  "example_filename": "2026-02-10.txt"},
+    "charge_capture":         {"name": "Charge Capture",          "description": "Product usage and charges from previous 14 days",            "example_filename": "2026-02-10.txt"},
+    "preference_cards":       {"name": "Preference Cards",        "description": "Surgeon-specific supply preferences for procedures",         "example_filename": "2026-02-10.txt"},
+    "product_master":         {"name": "Product Master",          "description": "Complete product catalog from ERP system",                   "example_filename": "2026-02-10.txt"},
+    "service_lines":          {"name": "Service Lines",           "description": "Service lines with associated procedures",                   "example_filename": "2026-02-10.txt"},
+    "service_line_providers": {"name": "Service Line Providers",  "description": "Providers/doctors for each service line",                    "example_filename": "2026-02-10.txt"},
 }
 
 def validate_file(file_content, filename, file_type):
-    """Send file to Claude for validation"""
-    
     client = get_claude_client()
-    
     prompt = f"""{VALIDATION_PROMPTS[file_type]}
 
 <sample_file>
@@ -298,7 +299,6 @@ Fix: [Exact action]
 | Your Column Name | Expected Name | Fix Action |
 |------------------|---------------|------------|
 | SUPPLY_ID        | supply_id     | Change to lowercase |
-| used_qty         | quantity_used | Rename column |
 
 ---
 
@@ -334,100 +334,389 @@ Must Add:
 ## 📊 QUICK STATS
 - Rows validated: [number]
 - Rows with errors: [number]
-- Error rate: [percentage]%
-"""
-    
+- Error rate: [percentage]%"""
+
     message = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4000,
         messages=[{"role": "user", "content": prompt}]
     )
-    
     return message.content[0].text
 
-FIXED_SCHEMA = {
-    "case_id": "Unique case/scheduling identifier",
-    "patient_id": "Patient medical record number",
-    "patient_name": "Full patient name",
-    "surgeon": "Primary surgeon name",
-    "procedure": "Procedure or surgery name",
-    "room": "OR or procedure room",
-    "scheduled_time": "Scheduled date and time (ISO format)",
-    "department": "Hospital department or service",
-    "status": "Case status (scheduled, cancelled, modified)",
-    "attending_physician": "Attending physician if different from surgeon",
+
+# ════════════════════════════════════════════════════════════════════════════
+# HL7 PARSER — few-shot examples + sample
+# ════════════════════════════════════════════════════════════════════════════
+FEW_SHOT = """
+You are an HL7-to-JSON parser for AssistIQ surgical supply platform.
+Convert HL7 messages into the exact AssistIQ appointment JSON format.
+
+Below are 4 real examples (Northwell LIJFH) showing exact input HL7 and expected JSON output.
+Study these carefully — your output must match this structure precisely.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114142|63263|SIU^S14|334502.25676|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+DG1|1||^Generalized abdominal pain [R10.84]|Generalized abdominal pain [R10.84]||^95;ORC
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
+
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
+    }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:41:57.893-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25676",
+      "createdAt": "2026-03-09T11:41:42.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
 }
 
-SAMPLE_HL7 = """MSH|^~\\&|EPIC|BAPTIST|BRIDGES|BRIDGES|20260306090000||SIU^S12|123456|P|2.3
-SCH|123456||20260306090000|60|MIN||^^^20260306090000^20260306100000
-PID|1||MRN98765^^^Baptist^MR||Smith^John^A||19700101|M
-PV1|1|I|OR-3^OR-3^OR-3|||||||Smith^Dr. Jane^^^MD
-AIG|1||12345^Dr. Jane Smith^EPIC
-AIL|1||OR-3^Operating Room 3^EPIC
-TQ1|1|||20260306090000|20260306100000
-ZPR|CABG^Coronary Artery Bypass Graft|CARD|SCHEDULED"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114147|63263|SIU^S14|334502.25677|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
 
-def parse_hl7_message(hl7_text):
-    """Send HL7 message to Claude for parsing and mapping"""
-    client = get_claude_client()
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
+    }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:41:58.317-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25677",
+      "createdAt": "2026-03-09T11:41:47.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
+}
 
-    prompt = f"""You are an HL7 message parser for a surgical supply tracking system. Parse the following HL7 SIU message and map it to the fixed JSON schema below.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 3
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114017|63263|SIU^S14|334502.25675|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
 
-TARGET SCHEMA:
-{str(FIXED_SCHEMA)}
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
+    }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:40:22.824-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25675",
+      "createdAt": "2026-03-09T11:40:17.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
+}
 
-HL7 MESSAGE:
-{hl7_text}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE 4
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT HL7:
+MSH|^~\\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114012|63263|SIU^S14|334502.25674|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S
 
-Respond ONLY with a valid JSON object in this exact structure (no markdown, no backticks):
-{{
-  "mapped": {{
-    "case_id": "...",
-    "patient_id": "...",
-    "patient_name": "...",
-    "surgeon": "...",
-    "procedure": "...",
-    "room": "...",
-    "scheduled_time": "...",
-    "department": "...",
-    "status": "...",
-    "attending_physician": "..."
-  }},
-  "field_explanations": {{
-    "case_id": "Found in SCH segment field 1"
-  }},
-  "unmapped_fields": ["field_name"],
-  "unmapped_reasons": {{
-    "field_name": "Segment not present in message"
-  }},
-  "confidence": "high",
-  "notes": "Any important observations"
-}}"""
+OUTPUT JSON:
+{
+  "id": "27756",
+  "reason": [
+    {
+      "id": "1",
+      "note": [],
+      "duration": 180,
+      "endDateTime": "2026-03-09T17:25:00-0400",
+      "serviceCode": { "code": "1078002605", "display": "Transplant - Double Lung" },
+      "serviceLine": "Pediatric",
+      "practitioner": {
+        "id": "145251",
+        "name": { "given": "PHYSICIAN", "family": "SURGERY" },
+        "role": { "code": "1.1", "display": "Primary" },
+        "resourceType": "Practitioner"
+      },
+      "resourceType": "Procedure",
+      "startDateTime": "2026-03-09T14:25:00-0400"
+    }
+  ],
+  "status": "booked",
+  "patient": {
+    "name": { "given": "*", "family": "*" },
+    "display": "*",
+    "reference": "*",
+    "identifier": [{ "type": "MRN", "value": "*" }, { "type": "AccountID", "value": "*" }]
+  },
+  "duration": 180,
+  "location": { "room": "LIJFH OR 1", "display": "LIJFH OR 1", "facility": "FHOR" },
+  "metadata": {
+    "source": "Northwell-EPIC-OR",
+    "createdAt": "2026-03-09T11:40:12.811-0400",
+    "HL7Message": {
+      "id": null,
+      "rawData": "*",
+      "sourceId": "334502.25674",
+      "createdAt": "2026-03-09T11:40:12.000-0400"
+    },
+    "connectorRevision": null
+  },
+  "endDateTime": "2026-03-09T17:25:00-0400",
+  "resourceType": "Appointment",
+  "startDateTime": "2026-03-09T14:25:00-0400"
+}
 
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    import json
-    text = message.content[0].text.replace("```json", "").replace("```", "").strip()
-    return json.loads(text)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD MAPPING RULES (enhanced — handles real-world variance across Epic, GE, MEDITECH)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+── APPOINTMENT ID ──
+id → SCH field 2. If empty, try SCH field 1.
 
-# Configure page
-st.set_page_config(
-    page_title="AIQ File Validator",
-    page_icon="✅",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+── STATUS (normalize all variants) ──
+status → Check SCH-25 first, then SCH-26.
+  Normalize:
+    "Sch", "SCH", "Scheduled", "BOOKED", "Booked", "booked" → "booked"
+    "Cancel", "Cancelled", "CANCELLED", "Canceled"          → "cancelled"
+    "Arrived", "ARRIVED"                                     → "arrived"
+    "Complete", "Completed", "COMPLETED", "Done"             → "fulfilled"
+    "Pending", "PENDING"                                     → "pending"
+  If unrecognized: use raw value and add "status" to flags array.
 
-# Custom CSS
+── DURATION (handle seconds / minutes / hours) ──
+duration → Check AIS-7 with AIS-8 as the unit. If AIS is absent, check SCH-9 with SCH-10 as unit.
+  Unit conversion:
+    "S" or "s" (seconds) → divide by 60 to get minutes
+    "MIN", "min", "m", "M" (minutes) → use as-is
+    "h", "H", "hr", "HR" (hours) → multiply by 60
+  Always output duration as an integer number of minutes.
+  Example: AIS field 7 = 10800, field 8 = S → 10800 ÷ 60 = 180 minutes.
+
+── START DATETIME ──
+startDateTime → Check AIS-4 first (format YYYYMMDDHHMMSS).
+  If AIS-4 is empty or AIS is absent, check SCH-11 — this field uses format ^^^YYYYMMDDHHMMSS,
+  take the 4th component after splitting by ^.
+  Convert to ISO 8601: YYYY-MM-DDTHH:MM:SS
+  Timezone: if the original message contains a timezone offset (e.g. -0400), preserve it.
+  If no timezone is present, append -0400 (Eastern) and add "timezone_assumed" to flags.
+
+── END DATETIME ──
+endDateTime → startDateTime + duration minutes. Always calculate, never leave null.
+
+── SERVICE CODE ──
+reason[0].serviceCode.code    → AIS-3 component 1
+reason[0].serviceCode.display → AIS-3 component 2
+
+── SERVICE LINE ──
+reason[0].serviceLine → Check PV1-10 first.
+  If PV1-10 is empty, check AIP-5 (the service line / specialty field).
+  If still empty, check RGS-3 component 2.
+  If none found, set to null and add "serviceLine" to flags.
+
+── PROVIDER (priority fallback logic) ──
+  Step 1: If multiple AIP segments exist, select the one where AIP-5 component 2 contains
+          "Primary" or AIP-4 component 1 is "1.1". If no primary marked, use first AIP.
+  Step 2: If AIP segment is absent or AIP-3 is empty, fall back to PV1-7 (attending physician).
+  Step 3: If PV1-7 is also empty, try PV1-8 (referring physician).
+  Always add "practitioner_source" to flags indicating which segment was used (AIP/PV1-7/PV1-8).
+
+practitioner.id           → AIP-3 component 1 (or PV1-7/8 component 1 if fallback)
+practitioner.name.family  → AIP-3 component 2 (or PV1-7/8 component 2 if fallback)
+practitioner.name.given   → AIP-3 component 3 (or PV1-7/8 component 3 if fallback)
+practitioner.role.code    → AIP-4 component 1 (if from AIP). If from PV1 fallback, use "attending"
+practitioner.role.display → AIP-4 component 2 (if from AIP). If from PV1 fallback, use "Attending"
+practitioner.resourceType → always "Practitioner"
+
+  If multiple AIP segments exist beyond the primary, include them in an
+  "additionalProviders" array at the top level, each with id/name/role fields.
+
+── LOCATION (fallback logic) ──
+location.room     → AIL-3 component 2 first. If empty, try AIL-3 component 1.
+                    If AIL segment is absent, use PV1-3 component 2.
+location.display  → same as location.room
+location.facility → AIL-3 component 4 first. If empty, use PV1-3 component 4.
+                    If still empty, use MSH-4 component 1.
+  Add "location_source" to flags if falling back to PV1 or MSH.
+
+── PATIENT ──
+patient.* → from PID fields. Preserve * exactly if already masked.
+  identifier[0]: type = "MRN", value = PID-3 component 1
+  identifier[1]: type = "AccountID", value = PID-18 (if present)
+  name.family = PID-5 component 1
+  name.given  = PID-5 component 2
+
+── METADATA ──
+metadata.source               → "{MSH-4 component 1}-EPIC-OR"
+metadata.createdAt            → MSH-7 as ISO 8601 with milliseconds (add .000 if absent)
+metadata.HL7Message.sourceId  → MSH-10
+metadata.HL7Message.createdAt → MSH-7 as ISO 8601 with .000 milliseconds
+metadata.HL7Message.rawData   → always "*"
+metadata.HL7Message.id        → always null
+metadata.connectorRevision    → always null
+resourceType                  → always "Appointment"
+
+── FIXED FIELDS ──
+reason[0].id           → AIS-1
+reason[0].note         → always []
+reason[0].resourceType → always "Procedure"
+reason[0].duration     → same as top-level duration
+reason[0].startDateTime → same as top-level startDateTime
+reason[0].endDateTime  → same as top-level endDateTime
+"""
+
+SAMPLE_HL7 = """MSH|^~\\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114142|63263|SIU^S14|334502.25676|D
+SCH||27756||||||||10800|S|^^^20260309142500|||||||||63263^^^^|||||27731|Sch^Scheduled^SCHEDULING
+ZCS|BEFORE|N|ORSCH_S14|||
+PID|1|*|*^^^EPIC^MRN||*^*^^^^^L||*|F||||||||||*|||||||||||||N
+PV1||OP Surg|LIJFH-OR^^^LIJFH^^^^^LIJFH OR^^DEPID|||||||||Pediatric||||||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI||110000359528
+DG1|1||^Generalized abdominal pain [R10.84]|Generalized abdominal pain [R10.84]||^95;ORC
+RGS|1||1
+AIS|1||1078002605^Transplant - Double Lung|20260309142500|0|S|10800|S||||4
+AIL|1||^LIJFH OR 1^^FHOR
+AIP|1||145251^SURGERY^PHYSICIAN^^^^^^^PROVID^^^^PROVID~1103299990^SURGERY^PHYSICIAN^^^^^^^NPI^^^^NPI|1.1^Primary|Pediatric|20260309142500|0|S|10800|S"""
+
+MSG_TYPE_OPTIONS = [
+    "SIU — Scheduling",
+    "ADT — Patient Admin",
+    "DFT — Charges/Billing",
+    "ORM — Orders",
+]
+
+# ════════════════════════════════════════════════════════════════════════════
+# CUSTOM CSS (original morning style)
+# ════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
-    .main {
-        padding: 2rem;
-    }
+    .main { padding: 2rem; }
     .stButton>button {
         width: 100%;
         background-color: #0066cc;
@@ -436,121 +725,33 @@ st.markdown("""
         font-size: 18px;
         font-weight: bold;
     }
-    .success-box {
-        padding: 1rem;
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        border-radius: 0.25rem;
-        color: #155724;
-    }
-    .error-box {
-        padding: 1rem;
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        border-radius: 0.25rem;
-        color: #721c24;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# Header
+# ════════════════════════════════════════════════════════════════════════════
+# HEADER + TABS
+# ════════════════════════════════════════════════════════════════════════════
 st.title("🏥 AssistIQ Integration Tools")
 st.markdown("**Flat file validation and HL7 message parsing in one place**")
 st.markdown("---")
 
-tab1, tab2 = st.tabs(["📄 Flat File Validator", "🔬 HL7 Parser"])
+tab1, tab2 = st.tabs(["📁 Flat File Validator", "🔬 HL7 → JSON Parser"])
 
-with tab2:
-    st.markdown("### HL7 → JSON Parser")
-    st.markdown("Paste a raw SIU message to map it to the AssistIQ case schema.")
-
-    col_in, col_out = st.columns(2)
-
-    with col_in:
-        st.markdown("**Raw HL7 Input**")
-        if st.button("Load Sample Message"):
-            st.session_state.hl7_input = SAMPLE_HL7
-        hl7_input = st.text_area(
-            "Paste HL7 message here",
-            value=st.session_state.get("hl7_input", ""),
-            height=300,
-            placeholder="MSH|^~\\&|EPIC|BAPTIST...",
-            label_visibility="collapsed"
-        )
-
-        st.markdown("**Fixed Target Schema**")
-        st.caption(" · ".join(FIXED_SCHEMA.keys()))
-
-        if st.button("🔍 Parse & Map", type="primary"):
-            if hl7_input.strip():
-                with st.spinner("Parsing message..."):
-                    try:
-                        result = parse_hl7_message(hl7_input)
-                        st.session_state.hl7_result = result
-                    except Exception as e:
-                        st.error(f"Parse failed: {str(e)}")
-            else:
-                st.warning("Please paste an HL7 message first.")
-
-    with col_out:
-        if "hl7_result" in st.session_state:
-            result = st.session_state.hl7_result
-            confidence = result.get("confidence", "unknown")
-            conf_color = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(confidence, "⚪")
-
-            st.markdown(f"**Confidence: {conf_color} {confidence.upper()}**")
-
-            out_tab1, out_tab2, out_tab3 = st.tabs(["Mapped JSON", "Field Map", "Unmapped"])
-
-            with out_tab1:
-                import json
-                st.code(json.dumps(result.get("mapped", {}), indent=2), language="json")
-                st.download_button(
-                    "📥 Download JSON",
-                    data=json.dumps(result.get("mapped", {}), indent=2),
-                    file_name="mapped_case.json",
-                    mime="application/json"
-                )
-
-            with out_tab2:
-                explanations = result.get("field_explanations", {})
-                mapped = result.get("mapped", {})
-                if explanations:
-                    for field, explanation in explanations.items():
-                        with st.container():
-                            st.markdown(f"**{field}**: `{mapped.get(field, '—')}`")
-                            st.caption(explanation)
-                            st.divider()
-                else:
-                    st.info("No field explanations available.")
-                if result.get("notes"):
-                    st.info(f"📝 {result['notes']}")
-
-            with out_tab3:
-                unmapped = result.get("unmapped_fields", [])
-                reasons = result.get("unmapped_reasons", {})
-                if not unmapped:
-                    st.success("✅ All fields mapped successfully")
-                else:
-                    for field in unmapped:
-                        st.error(f"**{field}**: {reasons.get(field, 'Could not be determined')}")
-        else:
-            st.info("Output will appear here after parsing.")
-
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 1 — FLAT FILE VALIDATOR (original morning design)
+# ════════════════════════════════════════════════════════════════════════════
 with tab1:
-    # Sidebar
+    # Sidebar content (only visible when on this tab due to Streamlit behaviour)
     with st.sidebar:
         st.markdown("### 📖 How to Use")
         st.markdown("""
         1. **Select file type** from the dropdown
-        2. **Upload your .txt file** (pipe-delimited)
+        2. **Upload your file** (txt, csv, xlsx…)
         3. **Click Validate File** button
         4. **Review results** and fix any errors
         5. **Re-upload** until validation passes
         """)
-        
         st.markdown("---")
-        
         st.markdown("### ✅ What Gets Validated")
         st.markdown("""
         - ✓ Filename format (YYYY-MM-DD.txt)
@@ -562,9 +763,7 @@ with tab1:
         - ✓ Business rules (dates, relationships)
         - ✓ Timestamp formats (UTC)
         """)
-        
         st.markdown("---")
-        
         st.markdown("### 📞 Support")
         st.markdown("""
         Having issues? Contact:
@@ -576,31 +775,26 @@ with tab1:
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        # File type selector
         file_type = st.selectbox(
             "**Select File Type** 📁",
             list(FILE_TYPE_INFO.keys()),
             format_func=lambda x: FILE_TYPE_INFO[x]["name"]
         )
-        
-        # Show file info
         info = FILE_TYPE_INFO[file_type]
         st.info(f"**{info['name']}**: {info['description']}")
         st.caption(f"📄 Example filename: `{info['example_filename']}`")
 
     with col2:
         st.markdown("### 📊 Quick Stats")
-        if 'validation_count' not in st.session_state:
+        if "validation_count" not in st.session_state:
             st.session_state.validation_count = 0
-        if 'pass_count' not in st.session_state:
+        if "pass_count" not in st.session_state:
             st.session_state.pass_count = 0
-        
         st.metric("Files Validated", st.session_state.validation_count)
         st.metric("Files Passed", st.session_state.pass_count)
 
     st.markdown("---")
 
-    # File uploader
     uploaded_file = st.file_uploader(
         "**Upload File** 📤",
         type=["txt", "csv", "tsv", "xlsx", "xls"],
@@ -608,63 +802,45 @@ with tab1:
     )
 
     if uploaded_file is not None:
-        # Convert file to pipe-delimited format
         try:
             file_content, conversion_info = convert_to_pipe_delimited(uploaded_file, uploaded_file.name)
             lines = file_content.split('\n')
-            
-            # File stats
+
             col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Filename", uploaded_file.name)
-            with col2:
-                st.metric("Format", conversion_info)
-            with col3:
-                st.metric("File Size", f"{len(file_content)} bytes")
-            with col4:
-                st.metric("Total Lines", len(lines))
-            
-            # Show format info if converted
+            with col1: st.metric("Filename", uploaded_file.name)
+            with col2: st.metric("Format", conversion_info)
+            with col3: st.metric("File Size", f"{len(file_content)} bytes")
+            with col4: st.metric("Total Lines", len(lines))
+
             if "converted" in conversion_info:
-                st.info(f"ℹ️ File automatically converted from {uploaded_file.name.split('.')[-1].upper()} to pipe-delimited format for validation")
-            
-            # File preview
+                st.info(f"ℹ️ File automatically converted from {uploaded_file.name.split('.')[-1].upper()} to pipe-delimited for validation")
+
             with st.expander("📄 **File Preview** (first 20 lines, pipe-delimited)", expanded=False):
-                preview_lines = '\n'.join(lines[:20])
-                st.code(preview_lines, language='text')
-            
+                st.code('\n'.join(lines[:20]), language='text')
+
             st.markdown("---")
-            
-            # Validate button
+
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
                 if st.button("🔍 **VALIDATE FILE**", type="primary"):
                     with st.spinner("🔄 Validating file with Claude AI... This may take 10-30 seconds..."):
                         try:
                             result = validate_file(file_content, uploaded_file.name, file_type)
-                            
-                            # Update stats
                             st.session_state.validation_count += 1
-                            
-                            # Show results
+
                             st.markdown("---")
                             st.markdown("## 📋 Validation Results")
-                            
-                            # Determine if passed
-                            first_line = result.split('\n')[0]
-                            is_pass = "PASS" in first_line
-                            
+
+                            is_pass = "PASS" in result.split('\n')[0]
                             if is_pass:
                                 st.session_state.pass_count += 1
                                 st.success("### ✅ Validation Passed!")
                                 st.balloons()
                             else:
                                 st.error("### ❌ Validation Failed - Errors Found")
-                            
-                            # Show detailed results
+
                             st.markdown(result)
-                            
-                            # Action buttons
+
                             st.markdown("---")
                             col1, col2 = st.columns(2)
                             with col1:
@@ -672,7 +848,6 @@ with tab1:
                                     st.success("✅ **This file is ready for upload to AssistIQ**")
                                 else:
                                     st.warning("⚠️ **Please fix errors and re-validate**")
-                            
                             with col2:
                                 st.download_button(
                                     label="📥 Download Validation Report",
@@ -680,41 +855,170 @@ with tab1:
                                     file_name=f"validation_report_{uploaded_file.name}.txt",
                                     mime="text/plain"
                                 )
-                            
                         except Exception as e:
                             st.error(f"❌ **Error during validation:** {str(e)}")
                             st.exception(e)
-        
+
         except UnicodeDecodeError:
-            st.error("❌ **Error:** Unable to read file. Please ensure it's a valid text or Excel file with UTF-8 encoding.")
+            st.error("❌ **Error:** Unable to read file. Please ensure it's UTF-8 encoded.")
         except Exception as e:
             st.error(f"❌ **Error reading/converting file:** {str(e)}")
-
     else:
-        # Instructions when no file uploaded
         st.info("👆 **Please upload a file to begin validation**")
-        
         st.markdown("### 📝 Supported File Formats")
         st.markdown("""
         Upload files in any of these formats:
         - **TXT:** Pipe (|), comma, or tab delimited
         - **CSV:** Comma-separated values
-        - **TSV:** Tab-separated values  
+        - **TSV:** Tab-separated values
         - **Excel:** .xlsx or .xls files
-        
+
         **All formats are automatically converted to pipe-delimited for validation.**
-        
+
         **Additional Requirements:**
         - **Encoding:** UTF-8 (for text files)
         - **Filename:** YYYY-MM-DD.txt format (e.g., 2026-02-10.txt)
         - **First row:** Must contain column headers
         """)
 
-# Footer
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 2 — HL7 → JSON PARSER (afternoon version)
+# ════════════════════════════════════════════════════════════════════════════
+with tab2:
+    st.markdown("### HL7 → JSON Parser")
+    st.markdown("Paste a raw HL7 message to convert it to AssistIQ appointment JSON format.")
+
+    col_in, col_out = st.columns(2)
+
+    with col_in:
+        # Message type + hospital on same row
+        c1, c2 = st.columns(2)
+        with c1:
+            msg_type = st.selectbox("**Message Type**", MSG_TYPE_OPTIONS)
+        with c2:
+            hospital = st.text_input("**Hospital / Facility** (optional)", placeholder="e.g. Baptist, Northwell")
+
+        st.markdown("**Raw HL7 Input**")
+        if st.button("Load Sample Message"):
+            st.session_state["hl7_input"] = SAMPLE_HL7
+
+        hl7_input = st.text_area(
+            "Paste HL7 message here",
+            value=st.session_state.get("hl7_input", ""),
+            height=300,
+            placeholder="MSH|^~\\&|EPIC|BAPTIST...",
+            label_visibility="collapsed"
+        )
+
+        if st.button("🔄 Parse & Map", type="primary"):
+            if hl7_input.strip():
+                with st.spinner("Parsing message..."):
+                    try:
+                        client = get_claude_client()
+                        prompt = f"""{FEW_SHOT}
+
+Now parse the new HL7 message below using the EXACT same JSON structure and field mapping rules.
+Hospital context: {hospital if hospital else "not specified"}
+Message type: {msg_type}
+
+HL7 MESSAGE TO PARSE:
+{hl7_input}
+
+STRICT RULES:
+- Return ONLY valid JSON, no markdown, no backticks, no explanation
+- All fields must follow the exact structure shown in the examples
+- metadata.HL7Message.id must always be null
+- metadata.connectorRevision must always be null
+- metadata.HL7Message.rawData must always be "*"
+- Apply ALL fallback logic from the FIELD MAPPING RULES — provider, location, duration units, status normalization, and start datetime fallbacks
+- If multiple AIP segments exist, include additional providers in "additionalProviders" array
+- Include a "confidence" field at the top level: "high", "medium", or "low"
+- Include a "flags" array listing: any fields you fell back on, any assumed values (e.g. timezone_assumed), and any fields you were uncertain about
+- duration must always be an integer number of minutes — never seconds or hours
+- endDateTime must always be calculated, never null"""
+
+                        message = client.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            max_tokens=2000,
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        raw = message.content[0].text.replace("```json", "").replace("```", "").strip()
+                        parsed = json.loads(raw)
+                        st.session_state["hl7_result"] = parsed
+                        st.session_state["hl7_raw"] = raw
+                    except Exception as e:
+                        st.error(f"Parse failed: {str(e)}")
+            else:
+                st.warning("Please paste an HL7 message first.")
+
+    with col_out:
+        if "hl7_result" in st.session_state:
+            result = st.session_state["hl7_result"]
+            confidence = result.get("confidence", "unknown")
+            conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(confidence, "⚪")
+
+            st.markdown(f"**Confidence: {conf_icon} {confidence.upper()}**")
+
+            flags = result.get("flags", [])
+            if flags:
+                st.warning(f"⚠️ Flagged fields: {', '.join(flags)}")
+
+            out_tab1, out_tab2, out_tab3 = st.tabs(["Mapped JSON", "Field Map", "Unmapped"])
+
+            with out_tab1:
+                display = {k: v for k, v in result.items() if k not in ("confidence", "flags")}
+                st.code(json.dumps(display, indent=2), language="json")
+                st.download_button(
+                    "📥 Download JSON",
+                    data=json.dumps(display, indent=2),
+                    file_name="appointment.json",
+                    mime="application/json"
+                )
+
+            with out_tab2:
+                # Show key top-level fields in a readable way
+                key_fields = ["id", "status", "duration", "startDateTime", "endDateTime", "resourceType", "confidence"]
+                for f in key_fields:
+                    if f in result:
+                        st.markdown(f"**{f}**: `{result[f]}`")
+                if result.get("location"):
+                    loc = result["location"]
+                    st.markdown(f"**location.room**: `{loc.get('room', '—')}`")
+                    st.markdown(f"**location.facility**: `{loc.get('facility', '—')}`")
+                if result.get("reason") and len(result["reason"]) > 0:
+                    r = result["reason"][0]
+                    sc = r.get("serviceCode", {})
+                    st.markdown(f"**serviceCode.code**: `{sc.get('code', '—')}`")
+                    st.markdown(f"**serviceCode.display**: `{sc.get('display', '—')}`")
+                    st.markdown(f"**serviceLine**: `{r.get('serviceLine', '—')}`")
+                    p = r.get("practitioner", {})
+                    name = p.get("name", {})
+                    st.markdown(f"**practitioner**: `{name.get('given', '')} {name.get('family', '')}`")
+                    st.markdown(f"**practitioner.role**: `{p.get('role', {}).get('display', '—')}`")
+                if result.get("additionalProviders"):
+                    st.markdown(f"**additionalProviders**: `{len(result['additionalProviders'])} additional provider(s)`")
+                if result.get("metadata"):
+                    m = result["metadata"]
+                    st.markdown(f"**metadata.source**: `{m.get('source', '—')}`")
+                    st.markdown(f"**metadata.HL7Message.sourceId**: `{m.get('HL7Message', {}).get('sourceId', '—')}`")
+
+            with out_tab3:
+                flags = result.get("flags", [])
+                if not flags:
+                    st.success("✅ All fields mapped successfully")
+                else:
+                    for f in flags:
+                        st.warning(f"⚠️ {f}")
+        else:
+            st.info("Output will appear here after parsing.")
+
+# ════════════════════════════════════════════════════════════════════════════
+# FOOTER
+# ════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 1rem;'>
-    <small>AssistIQ Integration Tools v2.0 | Powered by Claude AI | 
+    <small>AssistIQ Integration Tools v3.0 | Powered by Claude AI |
     <a href='https://www.assistiq.com' target='_blank'>www.assistiq.com</a></small>
 </div>
 """, unsafe_allow_html=True)
