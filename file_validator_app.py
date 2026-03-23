@@ -25,6 +25,15 @@ def check_password():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
+        st.markdown(
+            """
+            <a href="https://www.assistiq.ai" target="_blank">
+                <img src="https://www.assistiq.ai/hubfs/website/brand/logos/primary-nav-logo.svg" width="160">
+            </a>
+            """, 
+            unsafe_allow_html=True
+        )
+
         st.title("🔒 Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -46,6 +55,17 @@ if time.time() - st.session_state.last_activity > TIMEOUT:
     st.rerun()
 st.session_state.last_activity = time.time()
 
+with st.sidebar:
+    st.markdown(
+        """
+        <div style="margin-bottom: 20px;">
+            <a href="https://www.assistiq.ai" target="_blank">
+                <img src="https://www.assistiq.ai/hubfs/website/brand/logos/primary-nav-logo.svg" width="160">
+            </a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 if st.sidebar.button("Logout"):
     st.session_state.authenticated = False
     st.rerun()
@@ -743,6 +763,7 @@ tab1, tab2 = st.tabs(["📁 Flat File Validator", "🔬 HL7 → JSON Parser"])
 with tab1:
     # Sidebar content (only visible when on this tab due to Streamlit behaviour)
     with st.sidebar:
+        st.markdown("---")
         st.markdown("### 📖 How to Use")
         st.markdown("""
         1. **Select file type** from the dropdown
