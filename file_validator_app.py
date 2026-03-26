@@ -99,166 +99,582 @@ VALIDATION_PROMPTS = {
     "case_picklist": """You are a data validation expert for AssistIQ integration files. Validate the Case Pick Lists file against exact specifications.
 
 <file_specification>
-FILE: Case Picklists Data Extract
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
+FILE: Case Picklists Data Extract (Section 3.1)
+FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"  e.g. 2026-03-24.txt
 DELIMITER: Pipe (|)
 LINE ENDING: Newline
 EXTRACTION: All cases scheduled for <daterun> and <daterun> + 3 days
-FREQUENCY: Daily (5-6am local time)
+FREQUENCY: Daily (prior to 6am local timezone)
 
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| case_id             | Y        | Unique case identifier               | String                    | Non-empty, unique per case          |
-| case_timestamp      | Y        | Scheduled case time in UTC           | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| picklist_id         | Y        | Case pick list identifier            | String                    | Non-empty                           |
-| procedure_id        | Y        | Procedure identifier                 | String                    | Non-empty                           |
-| primary_provider_id | Y        | Primary provider ID                  | String                    | Non-empty                           |
-| supply_id           | Y        | Supply/product identifier            | String                    | Non-empty                           |
-| is_implant          | Y        | Implant flag                         | Boolean                   | true/false, TRUE/FALSE, 1/0, Y/N    |
-| open_qty            | Y        | Open quantity                        | Integer                   | >= 0, whole number                  |
-| hold_qty            | Y        | Hold/PRN quantity                    | Integer                   | >= 0, whole number                  |
-| created_ts          | Y        | Record created timestamp UTC         | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp UTC         | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime, >= created_ts   |
+REQUIRED FIELDS (9 columns exactly):
+| Column               | Required | Description                                      | Format                    |
+|----------------------|----------|--------------------------------------------------|---------------------------|
+| case_id              | Y        | Unique identifier for the case                   | String                    |
+| case_timestamp       | Y        | Case scheduled time in UTC                       | yyyy-MM-dd'T'HH:mm:ss     |
+| picklist_id          | Y        | Case pick list identifier                        | String                    |
+| procedure_id         | Y        | Identifier for the service/procedure of the case | String                    |
+| primary_provider_id  | Y        | Id of the primary provider associated to case    | String                    |
+| supply_id            | Y        | Identifier for the supply in the picklist        | String                    |
+| is_implant           | Y        | Is the supply of type implant                    | Boolean (true/false, 1/0) |
+| open_qty             | Y        | Open quantity                                    | Integer >= 0              |
+| hold_qty             | Y        | Hold/PRN quantity                                | Integer >= 0              |
+
+IMPORTANT: created_ts and updated_ts are NOT part of this spec. Do NOT flag their absence as errors.
 </file_specification>
 
-Validate the file thoroughly and provide detailed feedback.""",
+Validate the file and provide results in this ACTIONABLE format:
+
+## 🎯 VALIDATION SUMMARY
+Status: [✅ PASS / ❌ FAIL]
+Errors Found: [number]
+Total Rows: [number]
+Ready for Upload: [YES/NO]
+
+---
+
+## ❌ CRITICAL ISSUES (Fix These First)
+[Only list critical blocking errors. Maximum 5. If none, say "None"]
+
+**Issue #1: [Title]**
+Problem: [What's wrong]
+Fix: [Exact action]
+
+---
+
+## 📋 COLUMN ERRORS
+[Show ONLY columns with errors. If all correct, say "All columns correct"]
+
+| Your Column Name | Expected Name | Fix Action |
+|------------------|---------------|------------|
+
+---
+
+## 🔍 MISSING COLUMNS
+[List ONLY missing required columns. If none, say "No missing columns"]
+
+---
+
+## 🚨 DATA ERRORS BY ROW
+[Show first 10 rows with errors. If none, say "No data errors"]
+
+| Row | Column | Current Value | Error | Fix |
+|-----|--------|---------------|-------|-----|
+
+---
+
+## ✅ STEP-BY-STEP FIX PLAN
+**Step 1: [Action]**
+[Instructions]
+
+---
+
+## 📊 QUICK STATS
+- Rows validated: [number]
+- Rows with errors: [number]
+- Error rate: [percentage]%""",
 
     "charge_capture": """You are a data validation expert for AssistIQ integration files. Validate the Charge Capture file against exact specifications.
 
 <file_specification>
-FILE: Charge Capture Data
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
+FILE: Charge Capture Cases Data Extract (Section 3.2)
+FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"  e.g. 2026-03-24.txt
 DELIMITER: Pipe (|)
-EXTRACTION: All charges from previous 14 days
+LINE ENDING: Newline
+EXTRACTION: All cases scheduled between <daterun - 14 days> and <daterun>
+FREQUENCY: Daily (prior to 6am local timezone)
 
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| case_id             | Y        | Unique case identifier               | String                    | Non-empty                           |
-| supply_id           | Y        | Supply/product identifier            | String                    | Non-empty                           |
-| quantity_used       | Y        | Quantity used                        | Integer                   | > 0, whole number                   |
-| quantity_wasted     | N        | Quantity wasted                      | Integer                   | >= 0 if present                     |
-| unit_price          | Y        | Price per unit                       | Decimal                   | >= 0, max 2 decimals                |
-| total_price         | Y        | Total price                          | Decimal                   | >= 0, max 2 decimals                |
-| is_implant          | Y        | Implant flag                         | Boolean                   | true/false, 1/0, Y/N                |
-| lot_number          | N        | Lot number (implants)                | String                    | Max 50 chars if present             |
-| serial_number       | N        | Serial number (implants)             | String                    | Max 50 chars if present             |
-| expiry_date         | N        | Expiration date                      | yyyy-MM-dd                | Valid future date if present        |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
+REQUIRED FIELDS (20 columns):
+| Column                           | Required | Description                                                       | Format                    |
+|----------------------------------|----------|-------------------------------------------------------------------|---------------------------|
+| case_id                          | Y        | Unique identifier for the case                                    | String                    |
+| case_timestamp                   | Y        | Case scheduled time in UTC                                        | yyyy-MM-dd'T'HH:mm:ss     |
+| picklist_id                      | Y        | Case pick list identifier                                         | String                    |
+| primary_procedure_id             | Y        | Identifier for the primary service/procedure of the case          | String                    |
+| primary_provider_id              | Y        | Identifier for the primary provider/doctor                        | String                    |
+| supply_id                        | Y        | Identifier for the supply in the picklist                         | String                    |
+| is_implant                       | Y        | Is the supply of type implant                                     | Boolean (true/false, 1/0) |
+| used_qty                         | Y        | Quantity used, inclusive of wasted qty                            | Integer > 0               |
+| wasted_qty                       | Y        | Wasted quantity                                                   | Integer >= 0              |
+| wasted_reason                    | Y        | Reason for wasted qty                                             | String                    |
+| is_onetime_supply                | Y        | Flag if entered as a one time product (implant/supply)            | Boolean (true/false, 1/0) |
+| item_description                 | Y        | Item description                                                  | String                    |
+| item_manufacturer                | Y        | Item manufacturer name                                            | String                    |
+| item_manufacturer_id             | Y        | Item manufacturer's unique id in system                           | String                    |
+| item_manufacturer_catalog_number | Y        | Item manufacturer catalog number                                  | String                    |
+| item_price                       | Y        | Item unit price                                                   | Float >= 0                |
+| lot_number                       | Y        | Lot number for the supply                                         | String                    |
+| expiration_date                  | Y        | Expiration date for the supply                                    | yyyy-MM-dd                |
+| serial_number                    | Y        | Serial number                                                     | String                    |
+| picklist_type                    | Y        | Usage source: "Intra-op Pick List" or "Implant usage"             | String                    |
+
+IMPORTANT NOTES:
+- "quantity_used" is WRONG — correct name is "used_qty"
+- "quantity_wasted" is WRONG — correct name is "wasted_qty"
+- "unit_price" is WRONG — correct name is "item_price"
+- "total_price" is NOT in spec — do not flag its absence as an error
+- "created_ts" and "updated_ts" are NOT in spec — do not flag their absence
+- "reason_wasted" is WRONG — correct name is "wasted_reason"
+- Null/empty values in lot_number, serial_number, expiration_date are acceptable for non-implant rows
+- "NULL" string values should be flagged — fields should be empty/blank not the string "NULL"
 </file_specification>
 
-Validate the file thoroughly and provide detailed feedback.""",
+Validate the file and provide results in this ACTIONABLE format:
+
+## 🎯 VALIDATION SUMMARY
+Status: [✅ PASS / ❌ FAIL]
+Errors Found: [number]
+Total Rows: [number]
+Ready for Upload: [YES/NO]
+
+---
+
+## ❌ CRITICAL ISSUES (Fix These First)
+[Only list critical blocking errors. Maximum 5. If none, say "None"]
+
+**Issue #1: [Title]**
+Problem: [What's wrong]
+Fix: [Exact action]
+
+---
+
+## 📋 COLUMN ERRORS
+[Show ONLY columns with errors. If all correct, say "All columns correct"]
+
+| Your Column Name | Expected Name | Fix Action |
+|------------------|---------------|------------|
+
+---
+
+## 🔍 MISSING COLUMNS
+[List ONLY missing required columns. If none, say "No missing columns"]
+
+---
+
+## 🚨 DATA ERRORS BY ROW
+[Show first 10 rows with errors. If none, say "No data errors"]
+
+| Row | Column | Current Value | Error | Fix |
+|-----|--------|---------------|-------|-----|
+
+---
+
+## ✅ STEP-BY-STEP FIX PLAN
+**Step 1: [Action]**
+[Instructions]
+
+---
+
+## 📊 QUICK STATS
+- Rows validated: [number]
+- Rows with errors: [number]
+- Error rate: [percentage]%""",
 
     "preference_cards": """You are a data validation expert for AssistIQ integration files. Validate the Preference Cards file against exact specifications.
 
 <file_specification>
-FILE: Preference Cards
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
+FILE: Preference Card Data Extract (Section 3.3)
+FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"  e.g. 2026-03-24.txt
 DELIMITER: Pipe (|)
+LINE ENDING: Newline
+EXTRACTION: All active preference cards at the time of extraction
+FREQUENCY: Daily (prior to 6am local timezone)
 
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| preference_card_id  | Y        | Unique preference card ID            | String                    | Non-empty                           |
-| procedure_id        | Y        | Procedure identifier                 | String                    | Non-empty                           |
-| procedure_name      | Y        | Procedure name                       | String                    | Non-empty, max 255 chars            |
-| primary_provider_id | Y        | Provider/surgeon ID                  | String                    | Non-empty                           |
-| supply_id           | Y        | Supply/product ID                    | String                    | Non-empty                           |
-| open_qty            | Y        | Preferred open quantity              | Integer                   | >= 0                                |
-| hold_qty            | Y        | Preferred hold quantity              | Integer                   | >= 0                                |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
+REQUIRED FIELDS (9 columns):
+| Column             | Required | Description                                        | Format                    |
+|--------------------|----------|----------------------------------------------------|---------------------------|
+| preference_card_id | Y        | Unique identifier for the preference card          | String                    |
+| card_name          | N        | Preference card name                               | String                    |
+| procedure_id       | Y        | Identifier for the primary service/procedure       | String                    |
+| provider_id        | Y        | Identifier for the primary provider/doctor         | String (NOT primary_provider_id) |
+| supply_id          | Y        | Identifier for the supply in the picklist          | String                    |
+| is_implant         | Y        | Is the supply of type implant                      | Boolean (true/false, 1/0) |
+| open_qty           | Y        | Open quantity                                      | Integer >= 0              |
+| hold_qty           | Y        | Hold/PRN quantity                                  | Integer >= 0              |
+| location           | Y        | Location identifier                                | String                    |
+
+IMPORTANT NOTES:
+- "provider_id" is CORRECT per spec — do NOT flag it as wrong or suggest renaming to "primary_provider_id"
+- "card_name" is optional (N) — do not flag its absence as an error
+- "is_implant" and "location" are valid columns per spec — do NOT flag them as extra/unexpected
+- "procedure_name", "created_ts", "updated_ts" are NOT in this spec — do not flag their absence
+- The file should represent ALL preference cards in the EHR for all active procedures and providers
 </file_specification>
 
-Validate the file thoroughly and provide detailed feedback.""",
+Validate the file and provide results in this ACTIONABLE format:
 
-    "product_master": """You are a data validation expert for AssistIQ integration files. Validate the Product Master file against exact specifications.
+## 🎯 VALIDATION SUMMARY
+Status: [✅ PASS / ❌ FAIL]
+Errors Found: [number]
+Total Rows: [number]
+Ready for Upload: [YES/NO]
+
+---
+
+## ❌ CRITICAL ISSUES (Fix These First)
+[Only list critical blocking errors. Maximum 5. If none, say "None"]
+
+**Issue #1: [Title]**
+Problem: [What's wrong]
+Fix: [Exact action]
+
+---
+
+## 📋 COLUMN ERRORS
+[Show ONLY columns with errors. If all correct, say "All columns correct"]
+
+| Your Column Name | Expected Name | Fix Action |
+|------------------|---------------|------------|
+
+---
+
+## 🔍 MISSING COLUMNS
+[List ONLY missing required columns. If none, say "No missing columns"]
+
+---
+
+## 🚨 DATA ERRORS BY ROW
+[Show first 10 rows with errors. If none, say "No data errors"]
+
+| Row | Column | Current Value | Error | Fix |
+|-----|--------|---------------|-------|-----|
+
+---
+
+## ✅ STEP-BY-STEP FIX PLAN
+**Step 1: [Action]**
+[Instructions]
+
+---
+
+## 📊 QUICK STATS
+- Rows validated: [number]
+- Rows with errors: [number]
+- Error rate: [percentage]%""",
+
+    "chargeable_supplies": """You are a data validation expert for AssistIQ integration files. Validate the Chargeable Supplies file against exact specifications.
 
 <file_specification>
-FILE: Product Master
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
+FILE: Chargeable Supplies Data Extract (Section 3.4)
+FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"  e.g. 2026-03-24.txt
 DELIMITER: Pipe (|)
+LINE ENDING: Newline
+EXTRACTION: All chargeable products
+FREQUENCY: Daily (prior to 6am local timezone)
 
-REQUIRED FIELDS:
-| Column                      | Required | Description                          | Format                    | Validation Rules                    |
-|-----------------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| productId                   | Y        | Unique product identifier            | String                    | Non-empty, unique                   |
-| productDesc                 | Y        | Product description                  | String                    | Non-empty, max 255 chars            |
-| typeCode                    | Y        | Item type code                       | String                    | Non-empty                           |
-| typeDesc                    | Y        | Item type description                | String                    | Non-empty                           |
-| price                       | Y        | Unit price                           | Decimal                   | >= 0, max 2 decimals                |
-| supplierCatalogNumber       | N        | Supplier SKU                         | String                    | Max 50 chars if present             |
-| supplierId                  | N        | Supplier ID                          | String                    | Max 50 chars if present             |
-| supplierDesc                | N        | Supplier name                        | String                    | Max 100 chars if present            |
-| manufacturerCatalogNumber   | N        | Manufacturer SKU                     | String                    | Max 50 chars if present             |
-| manufacturerId              | N        | Manufacturer ID                      | String                    | Max 50 chars if present             |
-| manufacturer                | N        | Manufacturer name                    | String                    | Max 100 chars if present            |
-| gtin                        | N        | GTIN barcode                         | String                    | 12-14 numeric digits if present     |
-| isImplant                   | Y        | Implant flag                         | Boolean                   | true/false, 1/0, Y/N                |
+REQUIRED FIELDS (4 columns):
+| Column      | Required | Description                   | Format  |
+|-------------|----------|-------------------------------|---------|
+| supply_id   | Y        | Unique identifier for supply  | String  |
+| is_implant  | Y        | Is the supply an implant      | String  |
+| is_tissue   | Y        | Is the supply a tissue        | String  |
+| supply_name | Y        | Supply name                   | String  |
+
+IMPORTANT NOTES:
+- "product_id" is WRONG — correct name is "supply_id"
+- This file has only 4 columns — do not expect or require Product Master fields like gtin, price, manufacturer etc.
 </file_specification>
 
-Validate the file thoroughly and provide detailed feedback.""",
+Validate the file and provide results in this ACTIONABLE format:
+
+## 🎯 VALIDATION SUMMARY
+Status: [✅ PASS / ❌ FAIL]
+Errors Found: [number]
+Total Rows: [number]
+Ready for Upload: [YES/NO]
+
+---
+
+## ❌ CRITICAL ISSUES (Fix These First)
+[Only list critical blocking errors. Maximum 5. If none, say "None"]
+
+**Issue #1: [Title]**
+Problem: [What's wrong]
+Fix: [Exact action]
+
+---
+
+## 📋 COLUMN ERRORS
+[Show ONLY columns with errors. If all correct, say "All columns correct"]
+
+| Your Column Name | Expected Name | Fix Action |
+|------------------|---------------|------------|
+
+---
+
+## 🔍 MISSING COLUMNS
+[List ONLY missing required columns. If none, say "No missing columns"]
+
+---
+
+## 🚨 DATA ERRORS BY ROW
+[Show first 10 rows with errors. If none, say "No data errors"]
+
+| Row | Column | Current Value | Error | Fix |
+|-----|--------|---------------|-------|-----|
+
+---
+
+## ✅ STEP-BY-STEP FIX PLAN
+**Step 1: [Action]**
+[Instructions]
+
+---
+
+## 📊 QUICK STATS
+- Rows validated: [number]
+- Rows with errors: [number]
+- Error rate: [percentage]%""",
 
     "service_lines": """You are a data validation expert for AssistIQ integration files. Validate the Service Lines file against exact specifications.
 
 <file_specification>
-FILE: Service Lines
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
+FILE: Service Lines Data Extract (Section 3.5)
+FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"  e.g. 2026-03-24.txt
 DELIMITER: Pipe (|)
+LINE ENDING: Newline
+EXTRACTION: All service lines for active procedures
+FREQUENCY: Daily (prior to 6am local timezone)
 
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| service_line_id     | Y        | Unique service line identifier       | String                    | Non-empty, unique                   |
-| service_line_name   | Y        | Service line name                    | String                    | Non-empty, max 100 chars            |
-| service_line_abbrev | Y        | Service line abbreviation            | String                    | Non-empty, max 20 chars             |
-| procedure_id        | Y        | Procedure identifier                 | String                    | Non-empty                           |
-| procedure_name      | Y        | Procedure name                       | String                    | Non-empty, max 255 chars            |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
+REQUIRED FIELDS (5 columns):
+| Column              | Required | Description                                        | Format  |
+|---------------------|----------|----------------------------------------------------|---------|
+| service_line_id     | Y        | Unique identifier for the service line             | String  |
+| service_line_name   | Y        | Service line name                                  | String  |
+| service_line_abbrev | Y        | Service line abbreviation                          | String  |
+| procedure_id        | Y        | Identifier for the primary service/procedure       | String  |
+| procedure_name      | Y        | Procedure name                                     | String  |
+
+IMPORTANT NOTES:
+- "created_ts" and "updated_ts" are NOT in spec — do not flag their absence
 </file_specification>
 
-Validate the file thoroughly and provide detailed feedback.""",
+Validate the file and provide results in this ACTIONABLE format:
+
+## 🎯 VALIDATION SUMMARY
+Status: [✅ PASS / ❌ FAIL]
+Errors Found: [number]
+Total Rows: [number]
+Ready for Upload: [YES/NO]
+
+---
+
+## ❌ CRITICAL ISSUES (Fix These First)
+[Only list critical blocking errors. Maximum 5. If none, say "None"]
+
+**Issue #1: [Title]**
+Problem: [What's wrong]
+Fix: [Exact action]
+
+---
+
+## 📋 COLUMN ERRORS
+[Show ONLY columns with errors. If all correct, say "All columns correct"]
+
+| Your Column Name | Expected Name | Fix Action |
+|------------------|---------------|------------|
+
+---
+
+## 🔍 MISSING COLUMNS
+[List ONLY missing required columns. If none, say "No missing columns"]
+
+---
+
+## 🚨 DATA ERRORS BY ROW
+[Show first 10 rows with errors. If none, say "No data errors"]
+
+| Row | Column | Current Value | Error | Fix |
+|-----|--------|---------------|-------|-----|
+
+---
+
+## ✅ STEP-BY-STEP FIX PLAN
+**Step 1: [Action]**
+[Instructions]
+
+---
+
+## 📊 QUICK STATS
+- Rows validated: [number]
+- Rows with errors: [number]
+- Error rate: [percentage]%""",
 
     "service_line_providers": """You are a data validation expert for AssistIQ integration files. Validate the Service Line Providers file against exact specifications.
 
 <file_specification>
-FILE: Service Line Providers
-
-FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"
+FILE: Service Line Providers Data Extract (Section 3.6)
+FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"  e.g. 2026-03-24.txt
 DELIMITER: Pipe (|)
+LINE ENDING: Newline
+EXTRACTION: All providers for all service lines for active procedures
+FREQUENCY: Daily (prior to 6am local timezone)
 
-REQUIRED FIELDS:
-| Column              | Required | Description                          | Format                    | Validation Rules                    |
-|---------------------|----------|--------------------------------------|---------------------------|-------------------------------------|
-| service_line_id     | Y        | Service line identifier              | String                    | Non-empty                           |
-| service_line_name   | Y        | Service line name                    | String                    | Non-empty                           |
-| provider_id         | Y        | Provider identifier                  | String                    | Non-empty                           |
-| provider_first_name | Y        | Provider first name                  | String                    | Non-empty, max 100 chars            |
-| provider_middle_name| N        | Provider middle name                 | String                    | Max 100 chars if present            |
-| provider_last_name  | Y        | Provider last name                   | String                    | Non-empty, max 100 chars            |
-| is_active           | Y        | Active status                        | Boolean                   | true/false, 1/0, Y/N                |
-| created_ts          | Y        | Record created timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
-| updated_ts          | Y        | Record updated timestamp             | yyyy-MM-dd'T'HH:mm:ss    | Valid UTC datetime                  |
+REQUIRED FIELDS (8 columns):
+| Column               | Required | Description                              | Format                    |
+|----------------------|----------|------------------------------------------|---------------------------|
+| service_line_id      | Y        | Unique identifier for the service line   | String                    |
+| service_line_name    | Y        | Service line name                        | String                    |
+| service_line_abbrev  | Y        | Service line abbreviation                | String                    |
+| provider_id          | Y        | Identifier for the provider on the case  | String                    |
+| provider_first_name  | Y        | Provider/doctor first name               | String                    |
+| provider_middle_name | Y        | Provider/doctor middle name              | String                    |
+| provider_last_name   | Y        | Provider/doctor last name                | String                    |
+| is_active            | Y        | Is the doctor active and practicing      | Boolean (true/false, 1/0) |
+
+IMPORTANT NOTES:
+- "created_ts" and "updated_ts" are NOT in spec — do not flag their absence
+- "provider_middle_name" may be empty/null — this is acceptable
 </file_specification>
 
-Validate the file thoroughly and provide detailed feedback.""",
+Validate the file and provide results in this ACTIONABLE format:
+
+## 🎯 VALIDATION SUMMARY
+Status: [✅ PASS / ❌ FAIL]
+Errors Found: [number]
+Total Rows: [number]
+Ready for Upload: [YES/NO]
+
+---
+
+## ❌ CRITICAL ISSUES (Fix These First)
+[Only list critical blocking errors. Maximum 5. If none, say "None"]
+
+**Issue #1: [Title]**
+Problem: [What's wrong]
+Fix: [Exact action]
+
+---
+
+## 📋 COLUMN ERRORS
+[Show ONLY columns with errors. If all correct, say "All columns correct"]
+
+| Your Column Name | Expected Name | Fix Action |
+|------------------|---------------|------------|
+
+---
+
+## 🔍 MISSING COLUMNS
+[List ONLY missing required columns. If none, say "No missing columns"]
+
+---
+
+## 🚨 DATA ERRORS BY ROW
+[Show first 10 rows with errors. If none, say "No data errors"]
+
+| Row | Column | Current Value | Error | Fix |
+|-----|--------|---------------|-------|-----|
+
+---
+
+## ✅ STEP-BY-STEP FIX PLAN
+**Step 1: [Action]**
+[Instructions]
+
+---
+
+## 📊 QUICK STATS
+- Rows validated: [number]
+- Rows with errors: [number]
+- Error rate: [percentage]%""",
+
+    "product_master": """You are a data validation expert for AssistIQ integration files. Validate the Product Master file against exact specifications.
+
+<file_specification>
+FILE: Products Master Data Extract (Section 3.7)
+FILENAME: <daterun>.txt where <daterun> is "YYYY-MM-DD"  e.g. 2026-03-24.txt
+DELIMITER: Pipe (|)
+LINE ENDING: Newline
+EXTRACTION: All active products
+FREQUENCY: Daily (prior to 6am local timezone)
+
+REQUIRED FIELDS (14 columns):
+| Column                       | Required | Description                                          | Format        |
+|------------------------------|----------|------------------------------------------------------|---------------|
+| product_id                   | Y        | Identifier for the supply/product in the picklist    | String        |
+| gtin                         | N        | Item's GTIN                                          | String        |
+| description                  | Y        | Item's description                                   | String        |
+| category                     | Y        | Product categorization in the system                 | String        |
+| type                         | Y        | supply vs implant vs tissue                          | String        |
+| active                       | Y        | Whether product is active (in use)                   | Boolean       |
+| price                        | Y        | Unit price of product used                           | Float >= 0    |
+| supplier_id                  | N        | Item's supplier ID                                   | String        |
+| supplier_name                | N        | Item's supplier name                                 | String        |
+| supplier_product_id          | Y        | Item's supplier product catalog number               | String        |
+| manufacturer_id              | N        | Item's manufacturer ID in system                     | String        |
+| manufacturer_name            | N        | Item's manufacturer name                             | String        |
+| manufacturer_catalog_number  | N        | Item's manufacturer product catalog number (SKU)     | String        |
+| billing_code                 | Y        | Billing code that goes into Epic for this product    | String        |
+
+IMPORTANT NOTES:
+- All column names use snake_case — camelCase versions like "productId", "productDesc", "isImplant" are WRONG
+- "billing_code" is required and must be present
+- "isImplant" is NOT in this spec — do not require it
+- "typeCode" and "typeDesc" are NOT in spec — the correct columns are "category" and "type"
+- "supplierDesc" is WRONG — correct name is "supplier_name"
+- "supplierCatalogNumber" is WRONG — correct name is "supplier_product_id"
+- "manufacturerCatalogNumber" is WRONG — correct name is "manufacturer_catalog_number"
+</file_specification>
+
+Validate the file and provide results in this ACTIONABLE format:
+
+## 🎯 VALIDATION SUMMARY
+Status: [✅ PASS / ❌ FAIL]
+Errors Found: [number]
+Total Rows: [number]
+Ready for Upload: [YES/NO]
+
+---
+
+## ❌ CRITICAL ISSUES (Fix These First)
+[Only list critical blocking errors. Maximum 5. If none, say "None"]
+
+**Issue #1: [Title]**
+Problem: [What's wrong]
+Fix: [Exact action]
+
+---
+
+## 📋 COLUMN ERRORS
+[Show ONLY columns with errors. If all correct, say "All columns correct"]
+
+| Your Column Name | Expected Name | Fix Action |
+|------------------|---------------|------------|
+
+---
+
+## 🔍 MISSING COLUMNS
+[List ONLY missing required columns. If none, say "No missing columns"]
+
+---
+
+## 🚨 DATA ERRORS BY ROW
+[Show first 10 rows with errors. If none, say "No data errors"]
+
+| Row | Column | Current Value | Error | Fix |
+|-----|--------|---------------|-------|-----|
+
+---
+
+## ✅ STEP-BY-STEP FIX PLAN
+**Step 1: [Action]**
+[Instructions]
+
+---
+
+## 📊 QUICK STATS
+- Rows validated: [number]
+- Rows with errors: [number]
+- Error rate: [percentage]%""",
 }
 
 FILE_TYPE_INFO = {
-    "case_picklist":          {"name": "Case Pick Lists",         "description": "Daily case schedules with supply lists for next 72 hours",  "example_filename": "2026-02-10.txt"},
-    "charge_capture":         {"name": "Charge Capture",          "description": "Product usage and charges from previous 14 days",            "example_filename": "2026-02-10.txt"},
-    "preference_cards":       {"name": "Preference Cards",        "description": "Surgeon-specific supply preferences for procedures",         "example_filename": "2026-02-10.txt"},
-    "product_master":         {"name": "Product Master",          "description": "Complete product catalog from ERP system",                   "example_filename": "2026-02-10.txt"},
-    "service_lines":          {"name": "Service Lines",           "description": "Service lines with associated procedures",                   "example_filename": "2026-02-10.txt"},
-    "service_line_providers": {"name": "Service Line Providers",  "description": "Providers/doctors for each service line",                    "example_filename": "2026-02-10.txt"},
+    "case_picklist":         {"name": "Case Pick Lists (3.1)",         "description": "Daily case schedules with supply lists for today + next 72 hours",          "example_filename": "2026-03-24.txt"},
+    "charge_capture":        {"name": "Charge Capture (3.2)",          "description": "Product usage and charges from previous 14 days",                          "example_filename": "2026-03-24.txt"},
+    "preference_cards":      {"name": "Preference Cards (3.3)",        "description": "All active preference cards for all active procedures and providers",       "example_filename": "2026-03-24.txt"},
+    "chargeable_supplies":   {"name": "Chargeable Supplies (3.4)",     "description": "All chargeable products from the EHR system",                              "example_filename": "2026-03-24.txt"},
+    "service_lines":         {"name": "Service Lines (3.5)",           "description": "Service lines with associated procedures",                                 "example_filename": "2026-03-24.txt"},
+    "service_line_providers":{"name": "Service Line Providers (3.6)",  "description": "Providers/doctors for each service line",                                  "example_filename": "2026-03-24.txt"},
+    "product_master":        {"name": "Product Master (3.7)",          "description": "Complete product master from EHR or ERP system",                           "example_filename": "2026-03-24.txt"},
 }
 
 def validate_file(file_content, filename, file_type):
