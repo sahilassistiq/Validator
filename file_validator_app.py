@@ -1168,7 +1168,6 @@ st.markdown("""
 # HEADER + TABS
 # ════════════════════════════════════════════════════════════════════════════
 st.title("🏥 Self-Serve Tool")
-st.markdown("**Flat file validation and HL7 message parsing in one place**")
 st.markdown("---")
 
 tab1, tab2 = st.tabs(["📁 Flat File Validator", "🔬 HL7 → JSON Parser"])
