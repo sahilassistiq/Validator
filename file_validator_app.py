@@ -25,6 +25,15 @@ def check_password():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
+        st.markdown(
+            """
+            <a href="https://www.assistiq.ai" target="_blank">
+                <img src="https://www.assistiq.ai/hubfs/website/brand/logos/primary-nav-logo.svg" width="160">
+            </a>
+            """, 
+            unsafe_allow_html=True
+        )
+
         st.title("🔒 Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -46,6 +55,17 @@ if time.time() - st.session_state.last_activity > TIMEOUT:
     st.rerun()
 st.session_state.last_activity = time.time()
 
+with st.sidebar:
+    st.markdown(
+        """
+        <div style="margin-bottom: 20px;">
+            <a href="https://www.assistiq.ai" target="_blank">
+                <img src="https://www.assistiq.ai/hubfs/website/brand/logos/primary-nav-logo.svg" width="160">
+            </a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 if st.sidebar.button("Logout"):
     st.session_state.authenticated = False
     st.rerun()
@@ -1012,40 +1032,101 @@ OUTPUT JSON:
 }
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD MAPPING RULES (derived from examples above)
+FIELD MAPPING RULES (enhanced — handles real-world variance across Epic, GE, MEDITECH)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-id                            → SCH field 2
-status                        → SCH field 26 component 1: "Sch"/"Scheduled" = "booked", "Cancelled" = "cancelled", "Pending" = "pending". Unrecognized: use raw + flag low confidence.
-duration (top-level)          → AIS field 9 in seconds ÷ 60 = minutes (10800 → 180)
-startDateTime                 → AIS field 4 (YYYYMMDDHHMMSS) → ISO 8601 YYYY-MM-DDTHH:MM:SS-0400
-endDateTime                   → startDateTime + duration minutes
-reason[0].id                  → AIS field 1
-reason[0].duration            → same as top-level duration
-reason[0].startDateTime       → same as top-level startDateTime
-reason[0].endDateTime         → same as top-level endDateTime
-reason[0].note                → always []
-reason[0].resourceType        → always "Procedure"
-reason[0].serviceCode.code    → AIS field 3 component 1
-reason[0].serviceCode.display → AIS field 3 component 2
-reason[0].serviceLine         → PV1 field 10
-practitioner.id               → AIP field 3 component 1
-practitioner.name.family      → AIP field 3 component 2
-practitioner.name.given       → AIP field 3 component 3
-practitioner.role.code        → AIP field 5 component 1
-practitioner.role.display     → AIP field 5 component 2
-practitioner.resourceType     → always "Practitioner"
-location.room                 → AIL field 3 component 2
-location.display              → same as location.room
-location.facility             → AIL field 3 component 4
-patient.*                     → from PID fields, preserve * exactly if already masked
-metadata.source               → "{MSH field 4 component 1}-EPIC-OR"
-metadata.createdAt            → MSH field 7 as ISO 8601 (add .000 ms if not present)
-metadata.HL7Message.sourceId  → MSH field 10
-metadata.HL7Message.createdAt → MSH field 7 as ISO 8601 with .000 milliseconds
+
+── APPOINTMENT ID ──
+id → SCH field 2. If empty, try SCH field 1.
+
+── STATUS (normalize all variants) ──
+status → Check SCH-25 first, then SCH-26.
+  Normalize:
+    "Sch", "SCH", "Scheduled", "BOOKED", "Booked", "booked" → "booked"
+    "Cancel", "Cancelled", "CANCELLED", "Canceled"          → "cancelled"
+    "Arrived", "ARRIVED"                                     → "arrived"
+    "Complete", "Completed", "COMPLETED", "Done"             → "fulfilled"
+    "Pending", "PENDING"                                     → "pending"
+  If unrecognized: use raw value and add "status" to flags array.
+
+── DURATION (handle seconds / minutes / hours) ──
+duration → Check AIS-7 with AIS-8 as the unit. If AIS is absent, check SCH-9 with SCH-10 as unit.
+  Unit conversion:
+    "S" or "s" (seconds) → divide by 60 to get minutes
+    "MIN", "min", "m", "M" (minutes) → use as-is
+    "h", "H", "hr", "HR" (hours) → multiply by 60
+  Always output duration as an integer number of minutes.
+  Example: AIS field 7 = 10800, field 8 = S → 10800 ÷ 60 = 180 minutes.
+
+── START DATETIME ──
+startDateTime → Check AIS-4 first (format YYYYMMDDHHMMSS).
+  If AIS-4 is empty or AIS is absent, check SCH-11 — this field uses format ^^^YYYYMMDDHHMMSS,
+  take the 4th component after splitting by ^.
+  Convert to ISO 8601: YYYY-MM-DDTHH:MM:SS
+  Timezone: if the original message contains a timezone offset (e.g. -0400), preserve it.
+  If no timezone is present, append -0400 (Eastern) and add "timezone_assumed" to flags.
+
+── END DATETIME ──
+endDateTime → startDateTime + duration minutes. Always calculate, never leave null.
+
+── SERVICE CODE ──
+reason[0].serviceCode.code    → AIS-3 component 1
+reason[0].serviceCode.display → AIS-3 component 2
+
+── SERVICE LINE ──
+reason[0].serviceLine → Check PV1-10 first.
+  If PV1-10 is empty, check AIP-5 (the service line / specialty field).
+  If still empty, check RGS-3 component 2.
+  If none found, set to null and add "serviceLine" to flags.
+
+── PROVIDER (priority fallback logic) ──
+  Step 1: If multiple AIP segments exist, select the one where AIP-5 component 2 contains
+          "Primary" or AIP-4 component 1 is "1.1". If no primary marked, use first AIP.
+  Step 2: If AIP segment is absent or AIP-3 is empty, fall back to PV1-7 (attending physician).
+  Step 3: If PV1-7 is also empty, try PV1-8 (referring physician).
+  Always add "practitioner_source" to flags indicating which segment was used (AIP/PV1-7/PV1-8).
+
+practitioner.id           → AIP-3 component 1 (or PV1-7/8 component 1 if fallback)
+practitioner.name.family  → AIP-3 component 2 (or PV1-7/8 component 2 if fallback)
+practitioner.name.given   → AIP-3 component 3 (or PV1-7/8 component 3 if fallback)
+practitioner.role.code    → AIP-4 component 1 (if from AIP). If from PV1 fallback, use "attending"
+practitioner.role.display → AIP-4 component 2 (if from AIP). If from PV1 fallback, use "Attending"
+practitioner.resourceType → always "Practitioner"
+
+  If multiple AIP segments exist beyond the primary, include them in an
+  "additionalProviders" array at the top level, each with id/name/role fields.
+
+── LOCATION (fallback logic) ──
+location.room     → AIL-3 component 2 first. If empty, try AIL-3 component 1.
+                    If AIL segment is absent, use PV1-3 component 2.
+location.display  → same as location.room
+location.facility → AIL-3 component 4 first. If empty, use PV1-3 component 4.
+                    If still empty, use MSH-4 component 1.
+  Add "location_source" to flags if falling back to PV1 or MSH.
+
+── PATIENT ──
+patient.* → from PID fields. Preserve * exactly if already masked.
+  identifier[0]: type = "MRN", value = PID-3 component 1
+  identifier[1]: type = "AccountID", value = PID-18 (if present)
+  name.family = PID-5 component 1
+  name.given  = PID-5 component 2
+
+── METADATA ──
+metadata.source               → "{MSH-4 component 1}-EPIC-OR"
+metadata.createdAt            → MSH-7 as ISO 8601 with milliseconds (add .000 if absent)
+metadata.HL7Message.sourceId  → MSH-10
+metadata.HL7Message.createdAt → MSH-7 as ISO 8601 with .000 milliseconds
 metadata.HL7Message.rawData   → always "*"
 metadata.HL7Message.id        → always null
 metadata.connectorRevision    → always null
 resourceType                  → always "Appointment"
+
+── FIXED FIELDS ──
+reason[0].id           → AIS-1
+reason[0].note         → always []
+reason[0].resourceType → always "Procedure"
+reason[0].duration     → same as top-level duration
+reason[0].startDateTime → same as top-level startDateTime
+reason[0].endDateTime  → same as top-level endDateTime
 """
 
 SAMPLE_HL7 = """MSH|^~\\&|EPIC|LIJFH^LIJFH^NHPARLOC|||20260309114142|63263|SIU^S14|334502.25676|D
@@ -1098,6 +1179,7 @@ tab1, tab2 = st.tabs(["📁 Flat File Validator", "🔬 HL7 → JSON Parser"])
 with tab1:
     # Sidebar content (only visible when on this tab due to Streamlit behaviour)
     with st.sidebar:
+        st.markdown("---")
         st.markdown("### 📖 How to Use")
         st.markdown("""
         1. **Select file type** from the dropdown
@@ -1285,8 +1367,12 @@ STRICT RULES:
 - metadata.HL7Message.id must always be null
 - metadata.connectorRevision must always be null
 - metadata.HL7Message.rawData must always be "*"
+- Apply ALL fallback logic from the FIELD MAPPING RULES — provider, location, duration units, status normalization, and start datetime fallbacks
+- If multiple AIP segments exist, include additional providers in "additionalProviders" array
 - Include a "confidence" field at the top level: "high", "medium", or "low"
-- Include a "flags" array listing any fields you were uncertain about"""
+- Include a "flags" array listing: any fields you fell back on, any assumed values (e.g. timezone_assumed), and any fields you were uncertain about
+- duration must always be an integer number of minutes — never seconds or hours
+- endDateTime must always be calculated, never null"""
 
                         message = client.messages.create(
                             model="claude-sonnet-4-20250514",
@@ -1328,7 +1414,7 @@ STRICT RULES:
 
             with out_tab2:
                 # Show key top-level fields in a readable way
-                key_fields = ["id", "status", "duration", "startDateTime", "endDateTime", "resourceType"]
+                key_fields = ["id", "status", "duration", "startDateTime", "endDateTime", "resourceType", "confidence"]
                 for f in key_fields:
                     if f in result:
                         st.markdown(f"**{f}**: `{result[f]}`")
@@ -1345,6 +1431,9 @@ STRICT RULES:
                     p = r.get("practitioner", {})
                     name = p.get("name", {})
                     st.markdown(f"**practitioner**: `{name.get('given', '')} {name.get('family', '')}`")
+                    st.markdown(f"**practitioner.role**: `{p.get('role', {}).get('display', '—')}`")
+                if result.get("additionalProviders"):
+                    st.markdown(f"**additionalProviders**: `{len(result['additionalProviders'])} additional provider(s)`")
                 if result.get("metadata"):
                     m = result["metadata"]
                     st.markdown(f"**metadata.source**: `{m.get('source', '—')}`")
