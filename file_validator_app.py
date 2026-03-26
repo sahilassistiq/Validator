@@ -10,7 +10,7 @@ from io import StringIO
 # PAGE CONFIG  (must be first st call)
 # ════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="AIQ Integration Tools",
+    page_title="AIQ Self-Serve Tool",
     page_icon="✅",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1167,7 +1167,7 @@ st.markdown("""
 # ════════════════════════════════════════════════════════════════════════════
 # HEADER + TABS
 # ════════════════════════════════════════════════════════════════════════════
-st.title("🏥 AssistIQ Integration Tools")
+st.title("🏥 Self-Serve Tool")
 st.markdown("**Flat file validation and HL7 message parsing in one place**")
 st.markdown("---")
 
