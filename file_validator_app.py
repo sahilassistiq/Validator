@@ -80,6 +80,13 @@ def get_claude_client():
         st.error("⚠️ ANTHROPIC_API_KEY not set!")
         st.stop()
     return anthropic.Anthropic(api_key=api_key)
+    
+def get_anthropic_model():
+    return (
+        st.secrets.get("ANTHROPIC_MODEL")
+        or os.environ.get("ANTHROPIC_MODEL")
+        or "claude-opus-4-8"
+    )
 
 # ════════════════════════════════════════════════════════════════════════════
 # FLAT FILE VALIDATOR — helpers
@@ -773,10 +780,10 @@ Must Add:
 - Error rate: [percentage]%"""
 
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4000,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    model=get_anthropic_model(),
+    max_tokens=4000,
+    messages=[{"role": "user", "content": prompt}]
+)
     return message.content[0].text
 
 
@@ -1373,11 +1380,11 @@ STRICT RULES:
 - duration must always be an integer number of minutes — never seconds or hours
 - endDateTime must always be calculated, never null"""
 
-                        message = client.messages.create(
-                            model="claude-sonnet-4-20250514",
-                            max_tokens=2000,
-                            messages=[{"role": "user", "content": prompt}]
-                        )
+                       message = client.messages.create(
+    model=get_anthropic_model(),
+    max_tokens=2000,
+    messages=[{"role": "user", "content": prompt}]
+)
                         raw = message.content[0].text.replace("```json", "").replace("```", "").strip()
                         parsed = json.loads(raw)
                         st.session_state["hl7_result"] = parsed
